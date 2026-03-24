@@ -20,14 +20,27 @@ const settingsRoutes = require("./routes/settings");
 const insightsRoutes = require("./routes/insights");
 const usersRoutes = require("./routes/users");
 
-
-
 const app = express();
+
+/* Allowed origins */
+const allowedOrigins = [
+  "http://localhost:3000",
+  "https://propertyos-frontend.onrender.com",
+  "https://thehousehub.app",
+  "https://www.thehousehub.app",
+];
 
 /* Middlewares */
 app.use(
   cors({
-    origin: "http://localhost:3000",
+    origin: function (origin, callback) {
+      if (!origin || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      console.warn("CORS blocked origin:", origin);
+      return callback(new Error(`CORS blocked for origin: ${origin}`));
+    },
     credentials: true,
   })
 );
@@ -94,10 +107,14 @@ app.get("/api/dashboard", async (req, res) => {
     ]);
 
     const totalProperties = properties.length;
+
     const totalUnits =
       units.length > 0
         ? units.filter((unit) => unit.isActive).length
-        : properties.reduce((sum, property) => sum + (property.unitsCount || 0), 0);
+        : properties.reduce(
+            (sum, property) => sum + (property.unitsCount || 0),
+            0
+          );
 
     const totalTenants = tenants.filter((tenant) => tenant.isActive).length;
 
