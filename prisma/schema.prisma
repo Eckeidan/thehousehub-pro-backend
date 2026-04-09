@@ -6,6 +6,18 @@ datasource db {
   provider = "postgresql"
 }
 
+enum LeaseChangeType {
+  RENT_CHANGE
+}
+
+enum LeaseChangeRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+  EXPIRED
+}
+
 enum UserRole {
   ADMIN
   OWNER
@@ -209,6 +221,7 @@ model Property {
   propertyImages      PropertyImage[]
   units               Unit[]
   leases              Lease[]
+  leaseChangeRequests LeaseChangeRequest[]
 
   @@index([code])
   @@index([city])
@@ -249,6 +262,7 @@ model Tenant {
   communications      Communication[]
   leases              Lease[]
   notifications       Notification[]
+  leaseChangeRequests LeaseChangeRequest[]
 
   @@index([propertyId])
   @@index([email])
@@ -564,6 +578,7 @@ model Unit {
   tenants             Tenant[]
   maintenanceRequests MaintenanceRequest[]
   leases              Lease[]
+  leaseChangeRequests LeaseChangeRequest[]
 
   @@index([propertyId])
   @@index([unitCode])
@@ -591,10 +606,11 @@ model Lease {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  unit     Unit      @relation(fields: [unitId], references: [id], onDelete: Cascade)
-  property Property  @relation(fields: [propertyId], references: [id], onDelete: Cascade)
-  payments Payment[]
+  tenant         Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  unit           Unit                 @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  property       Property             @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  payments       Payment[]
+  changeRequests LeaseChangeRequest[]
 
   @@index([tenantId])
   @@index([unitId])
@@ -668,7 +684,8 @@ model User {
 
   notifications Notification[]
 
-  tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  tenant                Tenant?              @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  requestedLeaseChanges LeaseChangeRequest[] @relation("LeaseChangeRequestedBy")
 
   @@index([email])
   @@index([role])
@@ -695,4 +712,49 @@ model Notification {
   @@index([tenantId])
   @@index([isRead])
   @@index([createdAt])
+}
+
+model LeaseChangeRequest {
+  id String @id @default(cuid())
+
+  leaseId    String
+  tenantId   String
+  unitId     String
+  propertyId String
+
+  requestedByUserId String?
+
+  changeType LeaseChangeType          @default(RENT_CHANGE)
+  status     LeaseChangeRequestStatus @default(PENDING)
+
+  oldRentAmount Float
+  newRentAmount Float
+
+  effectiveDate DateTime?
+  reason        String?   @db.Text
+  tenantComment String?   @db.Text
+
+  respondedAt DateTime?
+  approvedAt  DateTime?
+  rejectedAt  DateTime?
+  cancelledAt DateTime?
+  expiredAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  lease       Lease    @relation(fields: [leaseId], references: [id], onDelete: Cascade)
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  unit        Unit     @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  property    Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  requestedBy User?    @relation("LeaseChangeRequestedBy", fields: [requestedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([leaseId])
+  @@index([tenantId])
+  @@index([unitId])
+  @@index([propertyId])
+  @@index([status])
+  @@index([changeType])
+  @@index([requestedByUserId])
+  @@map("lease_change_requests")
 }
