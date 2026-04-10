@@ -277,6 +277,7 @@ model MaintenanceRequest {
   propertyId    String
   tenantId      String?
   contractorId  String?
+  unitId        String?
 
   title       String
   description String?
@@ -287,16 +288,24 @@ model MaintenanceRequest {
   locationNote    String?
   assignedTo      String?
   preferredDate   DateTime?
-  entryPermission Boolean   @default(false)
-  estimatedCost   Decimal?  @db.Decimal(12, 2)
-  actualCost      Decimal?  @db.Decimal(12, 2)
-  adminNotes      String?
-  photos          Json?
-  dueDate         DateTime?
-  resolvedAt      DateTime?
-  completedAt     DateTime?
-  notes           String?
-  unitId          String?
+  entryPermission Boolean @default(false)
+
+  // Legacy / compatibility field
+  estimatedCost Decimal? @db.Decimal(12, 2)
+
+  // New detailed cost fields
+  estimatedLaborCost     Decimal? @db.Decimal(12, 2)
+  estimatedMaterialsCost Decimal? @db.Decimal(12, 2)
+  estimatedTotalCost     Decimal? @db.Decimal(12, 2)
+  actualCost             Decimal? @db.Decimal(12, 2)
+
+  materialsNotes String?
+  adminNotes     String?
+  photos         Json?
+  dueDate        DateTime?
+  resolvedAt     DateTime?
+  completedAt    DateTime?
+  notes          String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -310,24 +319,29 @@ model MaintenanceRequest {
   @@index([propertyId])
   @@index([tenantId])
   @@index([contractorId])
+  @@index([unitId])
   @@index([status])
   @@index([priority])
   @@index([category])
   @@index([dueDate])
-  @@index([unitId])
   @@map("maintenance_requests")
 }
 
 model Contractor {
-  id            String   @id @default(cuid())
-  companyName   String
-  contactPerson String?
-  email         String?
-  phone         String?
-  specialties   String?
-  rating        Decimal? @db.Decimal(3, 2)
-  isActive      Boolean  @default(true)
-  notes         String?
+  id              String   @id @default(cuid())
+  companyName     String
+  contactPerson   String?
+  email           String?
+  phone           String?
+  specialties     String?
+  serviceCategory String?
+  address         String?
+  city            String?
+  baseFee         Decimal? @db.Decimal(12, 2)
+  hourlyRate      Decimal? @db.Decimal(12, 2)
+  rating          Decimal? @db.Decimal(3, 2)
+  isActive        Boolean  @default(true)
+  notes           String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -336,6 +350,8 @@ model Contractor {
 
   @@index([companyName])
   @@index([phone])
+  @@index([serviceCategory])
+  @@index([city])
   @@index([isActive])
 }
 
