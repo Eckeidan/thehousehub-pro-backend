@@ -50,15 +50,28 @@ const corsOptions = {
   allowedHeaders: ["Content-Type", "Authorization"],
 };
 
-/* Middlewares */
+/* CORS */
 app.use(cors(corsOptions));
 app.options(/.*/, cors(corsOptions));
 
+/* Body parsers */
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 /* Static files */
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+
+/* Health checks */
+app.get("/", (req, res) => {
+  res.send("PropertyOS API is running");
+});
+
+app.get("/api/health", (req, res) => {
+  res.json({
+    success: true,
+    message: "API is healthy",
+  });
+});
 
 /* API Routes */
 app.use("/api/auth", authRoutes);
@@ -78,11 +91,6 @@ app.use("/api/settings", settingsRoutes);
 app.use("/api/insights", insightsRoutes);
 app.use("/api/users", usersRoutes);
 app.use("/api/contractors", contractorsRoutes);
-
-/* Health check */
-app.get("/", (req, res) => {
-  res.send("PropertyOS API is running");
-});
 
 /* Dashboard */
 app.get("/api/dashboard", async (req, res) => {
@@ -135,7 +143,7 @@ app.get("/api/dashboard", async (req, res) => {
     const occupancyRate =
       totalUnits > 0 ? Math.round((totalTenants / totalUnits) * 100) : 0;
 
-    res.json({
+    return res.json({
       totalProperties,
       totalUnits,
       totalTenants,
@@ -144,8 +152,28 @@ app.get("/api/dashboard", async (req, res) => {
     });
   } catch (error) {
     console.error("Dashboard error:", error);
-    res.status(500).json({ error: "Failed to load dashboard" });
+    return res.status(500).json({ error: "Failed to load dashboard" });
   }
+});
+
+/* API 404 fallback */
+app.use("/api", (req, res) => {
+  return res.status(404).json({
+    error: `API route not found: ${req.originalUrl}`,
+  });
+});
+
+/* Global error handler */
+app.use((err, req, res, next) => {
+  console.error("Server error:", err);
+
+  if (req.originalUrl.startsWith("/api")) {
+    return res.status(500).json({
+      error: err.message || "Internal server error",
+    });
+  }
+
+  return res.status(500).send("Internal server error");
 });
 
 const PORT = process.env.PORT || 4000;
