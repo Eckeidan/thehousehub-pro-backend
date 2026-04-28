@@ -21,6 +21,7 @@ const insightsRoutes = require("./routes/insights");
 const usersRoutes = require("./routes/users");
 const contractorsRoutes = require("./routes/contractors");
 const tenantContactRoutes = require("./routes/tenantContact");
+const communicationsRoutes = require("./routes/communications");
 
 
 
@@ -95,6 +96,8 @@ app.use("/api/insights", insightsRoutes);
 app.use("/api/users", usersRoutes);
 app.use("/api/contractors", contractorsRoutes);
 app.use("/api/tenant/contact", tenantContactRoutes);
+app.use("/api/communications", communicationsRoutes);
+
 
 
 console.log("Tenant contact route mounted: /api/tenant/contact");
