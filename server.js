@@ -20,6 +20,9 @@ const settingsRoutes = require("./routes/settings");
 const insightsRoutes = require("./routes/insights");
 const usersRoutes = require("./routes/users");
 const contractorsRoutes = require("./routes/contractors");
+const tenantContactRoutes = require("./routes/tenantContact");
+
+
 
 const app = express();
 
@@ -91,6 +94,10 @@ app.use("/api/settings", settingsRoutes);
 app.use("/api/insights", insightsRoutes);
 app.use("/api/users", usersRoutes);
 app.use("/api/contractors", contractorsRoutes);
+app.use("/api/tenant/contact", tenantContactRoutes);
+
+
+console.log("Tenant contact route mounted: /api/tenant/contact");
 
 /* Dashboard */
 app.get("/api/dashboard", async (req, res) => {
