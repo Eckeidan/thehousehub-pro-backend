@@ -23,6 +23,7 @@ const contractorsRoutes = require("./routes/contractors");
 const tenantContactRoutes = require("./routes/tenantContact");
 const communicationsRoutes = require("./routes/communications");
 const tenantSettingsRoutes = require("./routes/tenantSettings");
+const tenantMaintenanceRoutes = require("./routes/tenantMaintenance");
 
 
 
@@ -100,6 +101,9 @@ app.use("/api/contractors", contractorsRoutes);
 app.use("/api/tenant/contact", tenantContactRoutes);
 app.use("/api/communications", communicationsRoutes);
 app.use("/api/tenant/settings", tenantSettingsRoutes);
+
+app.use("/api/tenant/maintenance", tenantMaintenanceRoutes);
+
 
 
 
