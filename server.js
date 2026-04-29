@@ -22,6 +22,8 @@ const usersRoutes = require("./routes/users");
 const contractorsRoutes = require("./routes/contractors");
 const tenantContactRoutes = require("./routes/tenantContact");
 const communicationsRoutes = require("./routes/communications");
+const tenantSettingsRoutes = require("./routes/tenantSettings");
+
 
 
 
@@ -97,6 +99,8 @@ app.use("/api/users", usersRoutes);
 app.use("/api/contractors", contractorsRoutes);
 app.use("/api/tenant/contact", tenantContactRoutes);
 app.use("/api/communications", communicationsRoutes);
+app.use("/api/tenant/settings", tenantSettingsRoutes);
+
 
 
 
