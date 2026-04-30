@@ -1,9 +1,9 @@
 const express = require("express");
-const path = require("path");
-const fs = require("fs");
 const multer = require("multer");
+const { CloudinaryStorage } = require("multer-storage-cloudinary");
 
 const prisma = require("../lib/prisma");
+const cloudinary = require("../utils/cloudinary");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const { createNotification } = require("../utils/createNotification");
 
@@ -13,25 +13,15 @@ const aiRecommendationModel =
   prisma.aIRecommendation || prisma.aiRecommendation;
 
 /* =========================
-   UPLOAD CONFIG
+   CLOUDINARY UPLOAD CONFIG
 ========================= */
 
-const uploadDir = path.join(__dirname, "..", "uploads", "maintenance");
-
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-}
-
-const storage = multer.diskStorage({
-  destination(req, file, cb) {
-    cb(null, uploadDir);
-  },
-  filename(req, file, cb) {
-    const safeName = file.originalname
-      .replace(/\s+/g, "-")
-      .replace(/[^a-zA-Z0-9.\-_]/g, "");
-
-    cb(null, `${Date.now()}-${safeName}`);
+const storage = new CloudinaryStorage({
+  cloudinary,
+  params: {
+    folder: "propertyos/maintenance",
+    allowed_formats: ["jpg", "jpeg", "png", "webp"],
+    resource_type: "image",
   },
 });
 
@@ -131,23 +121,12 @@ function calculateContractorScore(contractor, request, propertyCity) {
   const city = normalizeText(contractor.city);
   const propertyCityNormalized = normalizeText(propertyCity);
 
-  if (serviceCategory && category && serviceCategory === category) {
-    score += 50;
-  }
-
-  if (specialties && category && specialties.includes(category)) {
-    score += 25;
-  }
-
-  if (city && propertyCityNormalized && city === propertyCityNormalized) {
-    score += 15;
-  }
+  if (serviceCategory && category && serviceCategory === category) score += 50;
+  if (specialties && category && specialties.includes(category)) score += 25;
+  if (city && propertyCityNormalized && city === propertyCityNormalized) score += 15;
 
   const rating = Number(contractor.rating || 0);
-
-  if (!Number.isNaN(rating) && rating > 0) {
-    score += Math.min(rating * 2, 10);
-  }
+  if (!Number.isNaN(rating) && rating > 0) score += Math.min(rating * 2, 10);
 
   return score;
 }
@@ -155,7 +134,10 @@ function calculateContractorScore(contractor, request, propertyCity) {
 function rankedConfidenceFromSuggestion(suggestion) {
   let confidence = 65;
 
-  if (normalizeText(suggestion.serviceCategory) === normalizeText(suggestion.category)) {
+  if (
+    normalizeText(suggestion.serviceCategory) ===
+    normalizeText(suggestion.category)
+  ) {
     confidence += 15;
   }
 
@@ -192,17 +174,13 @@ async function generateMaintenanceSuggestion(requestId) {
     },
   });
 
-  if (!request) {
-    throw new Error("Maintenance request not found");
-  }
+  if (!request) throw new Error("Maintenance request not found");
 
   const contractors = await prisma.contractor.findMany({
     where: { isActive: true },
   });
 
-  if (!contractors.length) {
-    return null;
-  }
+  if (!contractors.length) return null;
 
   const propertyCity = request.property?.city || "";
 
@@ -214,16 +192,14 @@ async function generateMaintenanceSuggestion(requestId) {
     .sort((a, b) => b.score - a.score);
 
   const best = ranked[0];
-
   if (!best) return null;
 
   const estimatedHours = calculateEstimatedHours(request.priority);
   const baseFee = Number(best.contractor.baseFee || 0);
   const hourlyRate = Number(best.contractor.hourlyRate || 0);
-
   const estimatedLaborCost = baseFee + hourlyRate * estimatedHours;
 
-  let estimatedMaterialsCost = 0;
+  let estimatedMaterialsCost = 25;
 
   if (request.category === "PLUMBING") {
     estimatedMaterialsCost = request.priority === "URGENT" ? 60 : 35;
@@ -241,8 +217,6 @@ async function generateMaintenanceSuggestion(requestId) {
     estimatedMaterialsCost = 90;
   } else if (request.category === "GENERAL") {
     estimatedMaterialsCost = 20;
-  } else {
-    estimatedMaterialsCost = 25;
   }
 
   const estimatedTotalCost = estimatedLaborCost + estimatedMaterialsCost;
@@ -269,15 +243,14 @@ async function generateMaintenanceSuggestion(requestId) {
     manualOverride: false,
   };
 }
+
 async function upsertMaintenanceRecommendation(requestId, suggestion) {
   const existingRecommendation = await aiRecommendationModel.findFirst({
     where: {
       maintenanceRequestId: requestId,
       type: "CONTRACTOR_SUGGESTION",
     },
-    orderBy: {
-      createdAt: "desc",
-    },
+    orderBy: { createdAt: "desc" },
   });
 
   const payload = {
@@ -326,9 +299,10 @@ async function autoCreateAIRecommendation(requestId) {
   }
 }
 
-/**
- * GET /api/tenant/maintenance
- */
+/* =========================
+   GET /api/tenant/maintenance
+========================= */
+
 router.get("/", requireAuth, requireRole("TENANT"), async (req, res) => {
   try {
     const tenantId = req.user?.tenantId;
@@ -362,9 +336,10 @@ router.get("/", requireAuth, requireRole("TENANT"), async (req, res) => {
   }
 });
 
-/**
- * POST /api/tenant/maintenance
- */
+/* =========================
+   POST /api/tenant/maintenance
+========================= */
+
 router.post(
   "/",
   requireAuth,
@@ -416,10 +391,12 @@ router.post(
 
       const photos = Array.isArray(req.files)
         ? req.files.map((file) => ({
-            url: `/uploads/maintenance/${file.filename}`,
+            url: file.path,
+            publicId: file.filename,
             fileName: file.originalname,
             mimeType: file.mimetype,
             size: file.size,
+            provider: "cloudinary",
           }))
         : [];
 
