@@ -101,7 +101,6 @@ app.use("/api/contractors", contractorsRoutes);
 app.use("/api/tenant/contact", tenantContactRoutes);
 app.use("/api/communications", communicationsRoutes);
 app.use("/api/tenant/settings", tenantSettingsRoutes);
-
 app.use("/api/tenant/maintenance", tenantMaintenanceRoutes);
 
 

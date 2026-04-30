@@ -299,8 +299,6 @@ async function generateMaintenanceSuggestion(requestId) {
       unit: true,
       tenant: true,
       contractor: true,
-      photos: true,
-      aiRecommendations: true,
     },
   });
 
