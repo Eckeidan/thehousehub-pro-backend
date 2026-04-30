@@ -7,6 +7,7 @@ const cloudinary = require("../utils/cloudinary");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const { createNotification } = require("../utils/createNotification");
 
+
 const router = express.Router();
 
 const aiRecommendationModel =
@@ -20,8 +21,8 @@ const storage = new CloudinaryStorage({
   cloudinary,
   params: {
     folder: "propertyos/maintenance",
-    allowed_formats: ["jpg", "jpeg", "png", "webp"],
     resource_type: "image",
+    allowed_formats: ["jpg", "jpeg", "png", "webp"],
   },
 });
 
@@ -41,6 +42,35 @@ const upload = multer({
     cb(null, true);
   },
 });
+
+function uploadPhotos(req, res, next) {
+  upload.array("photos", 5)(req, res, (error) => {
+    if (!error) return next();
+
+    console.error("Tenant maintenance upload error:", error);
+
+    if (error instanceof multer.MulterError) {
+      if (error.code === "LIMIT_FILE_SIZE") {
+        return res.status(400).json({
+          error:
+            "One or more photos are too large. Please upload images smaller than 5MB each.",
+        });
+      }
+
+      if (error.code === "LIMIT_FILE_COUNT") {
+        return res.status(400).json({
+          error: "You can upload a maximum of 5 photos per request.",
+        });
+      }
+    }
+
+    return res.status(400).json({
+      error:
+        error.message ||
+        "Some photos could not be uploaded. Please use JPG, PNG, or WEBP files.",
+    });
+  });
+}
 
 /* =========================
    UTILS
@@ -121,12 +151,23 @@ function calculateContractorScore(contractor, request, propertyCity) {
   const city = normalizeText(contractor.city);
   const propertyCityNormalized = normalizeText(propertyCity);
 
-  if (serviceCategory && category && serviceCategory === category) score += 50;
-  if (specialties && category && specialties.includes(category)) score += 25;
-  if (city && propertyCityNormalized && city === propertyCityNormalized) score += 15;
+  if (serviceCategory && category && serviceCategory === category) {
+    score += 50;
+  }
+
+  if (specialties && category && specialties.includes(category)) {
+    score += 25;
+  }
+
+  if (city && propertyCityNormalized && city === propertyCityNormalized) {
+    score += 15;
+  }
 
   const rating = Number(contractor.rating || 0);
-  if (!Number.isNaN(rating) && rating > 0) score += Math.min(rating * 2, 10);
+
+  if (!Number.isNaN(rating) && rating > 0) {
+    score += Math.min(rating * 2, 10);
+  }
 
   return score;
 }
@@ -174,13 +215,17 @@ async function generateMaintenanceSuggestion(requestId) {
     },
   });
 
-  if (!request) throw new Error("Maintenance request not found");
+  if (!request) {
+    throw new Error("Maintenance request not found");
+  }
 
   const contractors = await prisma.contractor.findMany({
     where: { isActive: true },
   });
 
-  if (!contractors.length) return null;
+  if (!contractors.length) {
+    return null;
+  }
 
   const propertyCity = request.property?.city || "";
 
@@ -192,14 +237,16 @@ async function generateMaintenanceSuggestion(requestId) {
     .sort((a, b) => b.score - a.score);
 
   const best = ranked[0];
+
   if (!best) return null;
 
   const estimatedHours = calculateEstimatedHours(request.priority);
   const baseFee = Number(best.contractor.baseFee || 0);
   const hourlyRate = Number(best.contractor.hourlyRate || 0);
+
   const estimatedLaborCost = baseFee + hourlyRate * estimatedHours;
 
-  let estimatedMaterialsCost = 25;
+  let estimatedMaterialsCost = 0;
 
   if (request.category === "PLUMBING") {
     estimatedMaterialsCost = request.priority === "URGENT" ? 60 : 35;
@@ -217,6 +264,8 @@ async function generateMaintenanceSuggestion(requestId) {
     estimatedMaterialsCost = 90;
   } else if (request.category === "GENERAL") {
     estimatedMaterialsCost = 20;
+  } else {
+    estimatedMaterialsCost = 25;
   }
 
   const estimatedTotalCost = estimatedLaborCost + estimatedMaterialsCost;
@@ -250,7 +299,9 @@ async function upsertMaintenanceRecommendation(requestId, suggestion) {
       maintenanceRequestId: requestId,
       type: "CONTRACTOR_SUGGESTION",
     },
-    orderBy: { createdAt: "desc" },
+    orderBy: {
+      createdAt: "desc",
+    },
   });
 
   const payload = {
@@ -344,7 +395,7 @@ router.post(
   "/",
   requireAuth,
   requireRole("TENANT"),
-  upload.array("photos", 5),
+  uploadPhotos,
   async (req, res) => {
     try {
       const tenantId = req.user?.tenantId;
@@ -392,11 +443,11 @@ router.post(
       const photos = Array.isArray(req.files)
         ? req.files.map((file) => ({
             url: file.path,
-            publicId: file.filename,
             fileName: file.originalname,
             mimeType: file.mimetype,
             size: file.size,
             provider: "cloudinary",
+            publicId: file.filename,
           }))
         : [];
 
@@ -473,23 +524,10 @@ router.post(
     } catch (error) {
       console.error("POST /api/tenant/maintenance error:", error);
 
-      if (error instanceof multer.MulterError) {
-        if (error.code === "LIMIT_FILE_SIZE") {
-          return res.status(400).json({
-            error:
-              "One or more photos are too large. Please upload images smaller than 5MB each.",
-          });
-        }
-
-        if (error.code === "LIMIT_FILE_COUNT") {
-          return res.status(400).json({
-            error: "You can upload a maximum of 5 photos per request.",
-          });
-        }
-      }
-
       return res.status(500).json({
-        error: error?.message || "Failed to create maintenance request",
+        error:
+          error?.message ||
+          "Failed to create maintenance request. Please try again.",
       });
     }
   }

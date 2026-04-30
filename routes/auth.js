@@ -162,12 +162,73 @@ router.get("/me", requireAuth, async (req, res) => {
 });
 
 /**
- * POST /api/auth/logout
+ * PUT /api/auth/change-password
  */
-router.post("/logout", requireAuth, async (req, res) => {
-  return res.json({
-    message: "Logout successful",
-  });
+router.put("/change-password", requireAuth, async (req, res) => {
+  try {
+    const userId = req.user?.userId;
+    const { currentPassword, newPassword, confirmPassword } = req.body || {};
+
+    if (!userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    if (!currentPassword || !newPassword || !confirmPassword) {
+      return res.status(400).json({
+        error: "Current password, new password and confirmation are required",
+      });
+    }
+
+    if (String(newPassword).length < 8) {
+      return res.status(400).json({
+        error: "New password must be at least 8 characters",
+      });
+    }
+
+    if (newPassword !== confirmPassword) {
+      return res.status(400).json({
+        error: "New password and confirmation do not match",
+      });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const validPassword = await bcrypt.compare(
+      currentPassword,
+      user.passwordHash
+    );
+
+    if (!validPassword) {
+      return res.status(400).json({
+        error: "Current password is incorrect",
+      });
+    }
+
+    const newPasswordHash = await bcrypt.hash(newPassword, 10);
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        passwordHash: newPasswordHash,
+      },
+    });
+
+    return res.json({
+      success: true,
+      message: "Password changed successfully",
+    });
+  } catch (error) {
+    console.error("Change password error:", error);
+    return res.status(500).json({
+      error: error.message || "Failed to change password",
+    });
+  }
 });
 
 module.exports = router;
