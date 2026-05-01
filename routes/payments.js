@@ -217,16 +217,61 @@ async function sendPaymentApprovedEmail({ tenant, payment }) {
       replyTo: adminEmail,
       subject: `Payment approved - ${companyName}`,
       html: `
-        <div style="font-family:Arial,sans-serif;line-height:1.6;color:#111827">
-          <h2>Payment approved</h2>
-          <p>Hello ${tenant?.firstName || "Tenant"},</p>
-          <p>Your payment of <strong>$${Number(payment.amount || 0).toFixed(2)}</strong> has been approved.</p>
-          <p><strong>Reference:</strong> ${payment.reference || "N/A"}</p>
-          <p>Thank you for your payment.</p>
-          <br/>
-          <p style="color:#6b7280">${companyName}</p>
-        </div>
-      `,
+<div style="font-family:Arial,sans-serif;background:#f4f7fb;padding:20px;">
+  <div style="max-width:600px;margin:auto;background:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 10px 30px rgba(0,0,0,0.05);">
+
+    <!-- HEADER -->
+    <div style="background:linear-gradient(90deg,#102a67,#173d8e);padding:20px;color:#ffffff;">
+      <h2 style="margin:0;">The House Hub</h2>
+      <p style="margin:0;font-size:13px;opacity:0.8;">Premium Property Management</p>
+    </div>
+
+    <!-- BODY -->
+    <div style="padding:25px;">
+      
+      <h2 style="color:#0f172a;margin-bottom:10px;">✅ Payment Approved</h2>
+
+      <p style="font-size:15px;color:#374151;">
+        Hello <strong>${tenant.firstName || "Tenant"}</strong>,
+      </p>
+
+      <p style="font-size:15px;color:#374151;">
+        Great news! Your payment has been successfully approved.
+      </p>
+
+      <!-- CARD -->
+      <div style="background:#f9fafb;border-radius:10px;padding:20px;margin-top:20px;">
+        
+        <p style="margin:5px 0;"><strong>Amount:</strong> $${Number(payment.amount).toFixed(2)}</p>
+        <p style="margin:5px 0;"><strong>Method:</strong> ${payment.paymentMethod}</p>
+        <p style="margin:5px 0;"><strong>Reference:</strong> ${payment.reference || "N/A"}</p>
+        <p style="margin:5px 0;"><strong>Status:</strong> <span style="color:#16a34a;font-weight:bold;">APPROVED</span></p>
+
+      </div>
+
+      <!-- CTA -->
+      <div style="margin-top:25px;text-align:center;">
+        <a href="https://thehousehub.app/tenant"
+           style="display:inline-block;background:#2563eb;color:#fff;padding:12px 20px;border-radius:8px;text-decoration:none;font-weight:bold;">
+           View Dashboard
+        </a>
+      </div>
+
+      <p style="margin-top:25px;font-size:14px;color:#6b7280;">
+        Your payment has been recorded and updated in your account.
+      </p>
+
+    </div>
+
+    <!-- FOOTER -->
+    <div style="background:#f1f5f9;padding:15px;text-align:center;font-size:12px;color:#6b7280;">
+      <p style="margin:0;">Need help? Contact us at info@propertyos.com</p>
+      <p style="margin:0;">© ${new Date().getFullYear()} The House Hub</p>
+    </div>
+
+  </div>
+</div>
+`
     });
   } catch (error) {
     console.error("Payment approved email error full:", error);
