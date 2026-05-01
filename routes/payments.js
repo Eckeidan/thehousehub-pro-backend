@@ -178,8 +178,19 @@ async function removePaymentProofFile(payment) {
 
 async function sendPaymentApprovedEmail({ tenant, payment }) {
   try {
-    const to = tenant?.user?.email || tenant?.email;
-    if (!to) return;
+    console.log("sendPaymentApprovedEmail called");
+    let to = tenant?.email;
+
+      if (!to && tenant?.id) {
+        const linkedUser = await prisma.user.findFirst({
+          where: { tenantId: tenant.id },
+          select: { email: true },
+        });
+
+        to = linkedUser?.email;
+      }
+
+      if (!to) return;
 
     const settings = await prisma.appSetting.findFirst({
       orderBy: { createdAt: "asc" },
@@ -233,7 +244,18 @@ async function sendNewPaymentToAdminEmail({ tenant, payment }) {
 
     if (!adminEmail) return;
 
-    const tenantEmail = tenant?.user?.email || tenant?.email || "N/A";
+    let tenantEmail = tenant?.email;
+
+          if (!tenantEmail && tenant?.id) {
+            const linkedUser = await prisma.user.findFirst({
+              where: { tenantId: tenant.id },
+              select: { email: true },
+            });
+
+            tenantEmail = linkedUser?.email;
+          }
+
+          tenantEmail = tenantEmail || "N/A";
 
     const transporter = nodemailer.createTransport({
       host: process.env.SMTP_HOST,
@@ -714,6 +736,17 @@ router.post(
         });
       }
 
+      console.log("PAYMENT EMAIL ADMIN TEST:", {
+        adminEmail: "settings email will be used",
+        tenantEmail: lease.tenant?.email,
+        amount: createdPayment.amount,
+      });
+
+      await sendNewPaymentToAdminEmail({
+        tenant: lease.tenant,
+        payment: createdPayment,
+      });
+
       return res.status(201).json({
         message: "Payment initiated successfully",
         payment: createdPayment,
@@ -751,9 +784,13 @@ router.put("/:id", requireAuth, requireRole("ADMIN", "OWNER"), async (req, res) 
   try {
     const existingPayment = await prisma.payment.findUnique({
       where: { id: req.params.id },
-      tenant: {
-        include: {
-          user: true,
+      include: {
+        lease: {
+          include: {
+            tenant: true,
+            unit: true,
+            property: true,
+          },
         },
       },
     });
@@ -772,9 +809,13 @@ router.put("/:id", requireAuth, requireRole("ADMIN", "OWNER"), async (req, res) 
         ...req.body,
         status: nextStatus,
       },
-      tenant: {
-        include: {
-          user: true,
+      include: {
+        lease: {
+          include: {
+            tenant: true,
+            unit: true,
+            property: true,
+          },
         },
       },
     });
@@ -784,14 +825,21 @@ router.put("/:id", requireAuth, requireRole("ADMIN", "OWNER"), async (req, res) 
       String(existingPayment.status || "").toUpperCase() !== nextStatus
     ) {
       if (nextStatus === "PAID") {
-        await createNotification({
-          tenantId: existingPayment.lease.tenant.id,
-          title: "Payment approved",
-          message: `Your payment of $${updatedPayment.amount} has been approved.`,
-          type: "SUCCESS",
-          category: "PAYMENT",
-        });
-      }
+              await createNotification({
+                tenantId: existingPayment.lease.tenant.id,
+                title: "Payment approved",
+                message: `Your payment of $${updatedPayment.amount} has been approved.`,
+                type: "SUCCESS",
+                category: "PAYMENT",
+              });
+
+              console.log("CALLING TENANT PAYMENT APPROVAL EMAIL...");
+
+              await sendPaymentApprovedEmail({
+                tenant: updatedPayment.lease.tenant,
+                payment: updatedPayment,
+              });
+            }
 
       if (nextStatus === "FAILED") {
         await createNotification({
