@@ -280,27 +280,36 @@ async function sendPaymentApprovedEmail({ tenant, payment }) {
 
 async function sendNewPaymentToAdminEmail({ tenant, payment }) {
   try {
+    console.log("sendNewPaymentToAdminEmail called");
+
     const settings = await prisma.appSetting.findFirst({
       orderBy: { createdAt: "asc" },
     });
 
+    console.log("SETTINGS EMAIL:", settings?.email);
+
     const companyName = settings?.companyName || "The House Hub";
     const adminEmail = settings?.email || process.env.SMTP_USER;
 
-    if (!adminEmail) return;
+    console.log("ADMIN EMAIL FINAL:", adminEmail);
+
+    if (!adminEmail) {
+      console.log("No admin email found. Email skipped.");
+      return;
+    }
 
     let tenantEmail = tenant?.email;
 
-          if (!tenantEmail && tenant?.id) {
-            const linkedUser = await prisma.user.findFirst({
-              where: { tenantId: tenant.id },
-              select: { email: true },
-            });
+    if (!tenantEmail && tenant?.id) {
+      const linkedUser = await prisma.user.findFirst({
+        where: { tenantId: tenant.id },
+        select: { email: true },
+      });
 
-            tenantEmail = linkedUser?.email;
-          }
+      tenantEmail = linkedUser?.email;
+    }
 
-          tenantEmail = tenantEmail || "N/A";
+    tenantEmail = tenantEmail || "N/A";
 
     const transporter = nodemailer.createTransport({
       host: process.env.SMTP_HOST,
@@ -312,7 +321,7 @@ async function sendNewPaymentToAdminEmail({ tenant, payment }) {
       },
     });
 
-    console.log("Sending admin payment email to:", adminEmail);
+    console.log("Sending admin email to:", adminEmail);
 
     await transporter.sendMail({
       from: `"${companyName}" <${process.env.EMAIL_FROM || process.env.SMTP_USER}>`,
@@ -320,23 +329,50 @@ async function sendNewPaymentToAdminEmail({ tenant, payment }) {
       replyTo: tenantEmail !== "N/A" ? tenantEmail : undefined,
       subject: `New tenant payment submitted - ${companyName}`,
       html: `
-        <div style="font-family:Arial,sans-serif;line-height:1.6;color:#111827">
-          <h2>New payment submitted</h2>
-          <p>A tenant has submitted a payment for approval.</p>
+        <div style="font-family:Arial,sans-serif;background:#f4f7fb;padding:20px;">
+          <div style="max-width:640px;margin:auto;background:#ffffff;border-radius:14px;overflow:hidden;box-shadow:0 12px 35px rgba(15,23,42,0.10);">
+            <div style="background:linear-gradient(90deg,#7f1d1d,#dc2626);padding:22px;color:#ffffff;">
+              <h2 style="margin:0;font-size:22px;">🚨 New Payment Requires Approval</h2>
+              <p style="margin:6px 0 0;font-size:13px;opacity:0.9;">Priority alert from ${companyName}</p>
+            </div>
 
-          <p><strong>Tenant:</strong> ${tenant?.firstName || ""} ${tenant?.lastName || ""}</p>
-          <p><strong>Tenant Email:</strong> ${tenantEmail}</p>
-          <p><strong>Amount:</strong> $${Number(payment.amount || 0).toFixed(2)}</p>
-          <p><strong>Method:</strong> ${payment.paymentMethod || "N/A"}</p>
-          <p><strong>Reference:</strong> ${payment.reference || "N/A"}</p>
-          <p><strong>Status:</strong> ${payment.status || "PENDING"}</p>
+            <div style="padding:26px;">
+              <p style="font-size:15px;color:#374151;margin:0 0 16px;">
+                A tenant has submitted a new payment. Please review and approve/reject it from the admin dashboard.
+              </p>
 
-          <br/>
-          <p>Please log in to the admin dashboard to approve or reject this payment.</p>
-          <p style="color:#6b7280">${companyName}</p>
+              <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:12px;padding:18px;margin:20px 0;">
+                <p style="margin:0 0 8px;color:#991b1b;font-weight:bold;">PRIORITY ACTION REQUIRED</p>
+                <p style="margin:0;color:#7f1d1d;font-size:14px;">This payment is currently pending confirmation.</p>
+              </div>
+
+              <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:12px;padding:20px;">
+                <p><strong>Tenant:</strong> ${tenant?.firstName || ""} ${tenant?.lastName || ""}</p>
+                <p><strong>Tenant Email:</strong> ${tenantEmail}</p>
+                <p><strong>Amount:</strong> $${Number(payment.amount || 0).toFixed(2)}</p>
+                <p><strong>Method:</strong> ${payment.paymentMethod || "N/A"}</p>
+                <p><strong>Reference:</strong> ${payment.reference || "N/A"}</p>
+                <p><strong>Status:</strong> <span style="color:#dc2626;font-weight:bold;">PENDING APPROVAL</span></p>
+              </div>
+
+              <div style="text-align:center;margin-top:26px;">
+                <a href="https://thehousehub.app/payments"
+                  style="display:inline-block;background:#dc2626;color:#ffffff;padding:13px 22px;border-radius:10px;text-decoration:none;font-weight:bold;">
+                  Review Payment Now
+                </a>
+              </div>
+            </div>
+
+            <div style="background:#f1f5f9;padding:15px;text-align:center;font-size:12px;color:#64748b;">
+              <p style="margin:0;">${companyName} • Smart Property Management</p>
+              <p style="margin:4px 0 0;">© ${new Date().getFullYear()} ${companyName}</p>
+            </div>
+          </div>
         </div>
       `,
     });
+
+    console.log("Admin payment email sent successfully.");
   } catch (error) {
     console.error("New payment admin email error full:", error);
   }
@@ -616,15 +652,26 @@ router.post("/", requireAuth, requireRole("ADMIN", "OWNER"), async (req, res) =>
       },
     });
 
-    if (payment?.lease?.tenant?.id) {
+    if (lease.tenant?.id) {
       await createNotification({
-        tenantId: payment.lease.tenant.id,
-        title: "Payment received",
-        message: `Payment of $${payment.amount} received`,
-        type: "SUCCESS",
+        tenantId: lease.tenant.id,
+        title: "Payment initiated",
+        message: `Your payment request of $${parsedAmount} has been submitted and is awaiting confirmation.`,
+        type: "INFO",
         category: "PAYMENT",
       });
+
+      console.log("CALLING ADMIN PAYMENT EMAIL...");
+      console.log("TENANT FOR ADMIN EMAIL:", lease.tenant);
+      console.log("PAYMENT FOR ADMIN EMAIL:", createdPayment.id);
+
+      await sendNewPaymentToAdminEmail({
+        tenant: lease.tenant,
+        payment: createdPayment,
+      });
     }
+
+
 
     res.status(201).json(payment);
   } catch (error) {
