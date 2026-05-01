@@ -28,7 +28,8 @@
     "multer": "^2.1.1",
     "multer-storage-cloudinary": "^4.0.0",
     "nodemailer": "^8.0.4",
-    "pg": "^8.20.0"
+    "pg": "^8.20.0",
+    "streamifier": "^0.1.1"
   },
   "prisma": {
     "seed": "node prisma/seed.js"

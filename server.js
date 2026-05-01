@@ -24,7 +24,7 @@ const tenantContactRoutes = require("./routes/tenantContact");
 const communicationsRoutes = require("./routes/communications");
 const tenantSettingsRoutes = require("./routes/tenantSettings");
 const tenantMaintenanceRoutes = require("./routes/tenantMaintenance");
-
+const tenantPaymentsRoutes = require("./routes/tenantPayments");
 
 
 
@@ -102,6 +102,7 @@ app.use("/api/tenant/contact", tenantContactRoutes);
 app.use("/api/communications", communicationsRoutes);
 app.use("/api/tenant/settings", tenantSettingsRoutes);
 app.use("/api/tenant/maintenance", tenantMaintenanceRoutes);
+app.use("/api/tenant/payments", tenantPaymentsRoutes);
 
 
 
