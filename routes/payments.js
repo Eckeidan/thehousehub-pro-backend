@@ -178,8 +178,15 @@ async function removePaymentProofFile(payment) {
 
 async function sendPaymentApprovedEmail({ tenant, payment }) {
   try {
-    const to = tenant?.email;
+    const to = tenant?.user?.email || tenant?.email;
     if (!to) return;
+
+    const settings = await prisma.appSetting.findFirst({
+      orderBy: { createdAt: "asc" },
+    });
+
+    const companyName = settings?.companyName || "The House Hub";
+    const adminEmail = settings?.email || process.env.SMTP_USER;
 
     const transporter = nodemailer.createTransport({
       host: process.env.SMTP_HOST,
@@ -191,26 +198,80 @@ async function sendPaymentApprovedEmail({ tenant, payment }) {
       },
     });
 
+    console.log("Sending tenant approval email to:", to);
+
     await transporter.sendMail({
-      from: process.env.EMAIL_FROM || process.env.SMTP_USER,
+      from: `"${companyName}" <${process.env.EMAIL_FROM || process.env.SMTP_USER}>`,
       to,
-      subject: "Payment approved - The House Hub",
+      replyTo: adminEmail,
+      subject: `Payment approved - ${companyName}`,
       html: `
         <div style="font-family:Arial,sans-serif;line-height:1.6;color:#111827">
           <h2>Payment approved</h2>
-          <p>Hello ${tenant.firstName || "Tenant"},</p>
-          <p>Your payment of <strong>$${Number(payment.amount || 0).toFixed(
-            2
-          )}</strong> has been approved.</p>
-          <p>Reference: <strong>${payment.reference || "N/A"}</strong></p>
+          <p>Hello ${tenant?.firstName || "Tenant"},</p>
+          <p>Your payment of <strong>$${Number(payment.amount || 0).toFixed(2)}</strong> has been approved.</p>
+          <p><strong>Reference:</strong> ${payment.reference || "N/A"}</p>
           <p>Thank you for your payment.</p>
           <br/>
-          <p style="color:#6b7280">The House Hub</p>
+          <p style="color:#6b7280">${companyName}</p>
         </div>
       `,
     });
   } catch (error) {
-    console.error("Payment approved email error:", error.message);
+    console.error("Payment approved email error full:", error);
+  }
+}
+
+async function sendNewPaymentToAdminEmail({ tenant, payment }) {
+  try {
+    const settings = await prisma.appSetting.findFirst({
+      orderBy: { createdAt: "asc" },
+    });
+
+    const companyName = settings?.companyName || "The House Hub";
+    const adminEmail = settings?.email || process.env.SMTP_USER;
+
+    if (!adminEmail) return;
+
+    const tenantEmail = tenant?.user?.email || tenant?.email || "N/A";
+
+    const transporter = nodemailer.createTransport({
+      host: process.env.SMTP_HOST,
+      port: Number(process.env.SMTP_PORT || 465),
+      secure: String(process.env.SMTP_SECURE || "true") === "true",
+      auth: {
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASS,
+      },
+    });
+
+    console.log("Sending admin payment email to:", adminEmail);
+
+    await transporter.sendMail({
+      from: `"${companyName}" <${process.env.EMAIL_FROM || process.env.SMTP_USER}>`,
+      to: adminEmail,
+      replyTo: tenantEmail !== "N/A" ? tenantEmail : undefined,
+      subject: `New tenant payment submitted - ${companyName}`,
+      html: `
+        <div style="font-family:Arial,sans-serif;line-height:1.6;color:#111827">
+          <h2>New payment submitted</h2>
+          <p>A tenant has submitted a payment for approval.</p>
+
+          <p><strong>Tenant:</strong> ${tenant?.firstName || ""} ${tenant?.lastName || ""}</p>
+          <p><strong>Tenant Email:</strong> ${tenantEmail}</p>
+          <p><strong>Amount:</strong> $${Number(payment.amount || 0).toFixed(2)}</p>
+          <p><strong>Method:</strong> ${payment.paymentMethod || "N/A"}</p>
+          <p><strong>Reference:</strong> ${payment.reference || "N/A"}</p>
+          <p><strong>Status:</strong> ${payment.status || "PENDING"}</p>
+
+          <br/>
+          <p>Please log in to the admin dashboard to approve or reject this payment.</p>
+          <p style="color:#6b7280">${companyName}</p>
+        </div>
+      `,
+    });
+  } catch (error) {
+    console.error("New payment admin email error full:", error);
   }
 }
 
@@ -631,7 +692,11 @@ router.post(
         include: {
           lease: {
             include: {
-              tenant: true,
+              tenant: {
+                include: {
+                  user: true,
+                },
+              },
               unit: true,
               property: true,
             },
@@ -686,11 +751,9 @@ router.put("/:id", requireAuth, requireRole("ADMIN", "OWNER"), async (req, res) 
   try {
     const existingPayment = await prisma.payment.findUnique({
       where: { id: req.params.id },
-      include: {
-        lease: {
-          include: {
-            tenant: true,
-          },
+      tenant: {
+        include: {
+          user: true,
         },
       },
     });
@@ -709,13 +772,9 @@ router.put("/:id", requireAuth, requireRole("ADMIN", "OWNER"), async (req, res) 
         ...req.body,
         status: nextStatus,
       },
-      include: {
-        lease: {
-          include: {
-            tenant: true,
-            unit: true,
-            property: true,
-          },
+      tenant: {
+        include: {
+          user: true,
         },
       },
     });
