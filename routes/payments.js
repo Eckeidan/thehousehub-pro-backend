@@ -6,6 +6,8 @@ const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
 
+const nodemailer = require("nodemailer");
+
 const router = express.Router();
 
 /* -------------------- UPLOAD SETUP -------------------- */
@@ -173,6 +175,104 @@ async function removePaymentProofFile(payment) {
     console.error("Failed to remove payment proof file:", error);
   }
 }
+
+async function sendPaymentApprovedEmail({ tenant, payment }) {
+  try {
+    const to = tenant?.email;
+    if (!to) return;
+
+    const transporter = nodemailer.createTransport({
+      host: process.env.SMTP_HOST,
+      port: Number(process.env.SMTP_PORT || 465),
+      secure: String(process.env.SMTP_SECURE || "true") === "true",
+      auth: {
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASS,
+      },
+    });
+
+    await transporter.sendMail({
+      from: process.env.EMAIL_FROM || process.env.SMTP_USER,
+      to,
+      subject: "Payment approved - The House Hub",
+      html: `
+        <div style="font-family:Arial,sans-serif;line-height:1.6;color:#111827">
+          <h2>Payment approved</h2>
+          <p>Hello ${tenant.firstName || "Tenant"},</p>
+          <p>Your payment of <strong>$${Number(payment.amount || 0).toFixed(
+            2
+          )}</strong> has been approved.</p>
+          <p>Reference: <strong>${payment.reference || "N/A"}</strong></p>
+          <p>Thank you for your payment.</p>
+          <br/>
+          <p style="color:#6b7280">The House Hub</p>
+        </div>
+      `,
+    });
+  } catch (error) {
+    console.error("Payment approved email error:", error.message);
+  }
+}
+
+
+/* -------------------- TENANT PAYMENTS HISTORY -------------------- */
+
+router.get(
+  "/tenant-history",
+  requireAuth,
+  requireRole("TENANT"),
+  async (req, res) => {
+    try {
+      const userId = req.user?.userId || req.user?.id || req.user?.sub;
+
+      if (!userId) {
+        return res.status(401).json({ error: "Unauthorized" });
+      }
+
+      const user = await prisma.user.findUnique({
+        where: { id: userId },
+        include: {
+          tenant: true,
+        },
+      });
+
+      if (!user || !user.tenant) {
+        return res.status(404).json({
+          error: "Tenant profile not found",
+        });
+      }
+
+      const payments = await prisma.payment.findMany({
+        where: {
+          lease: {
+            tenantId: user.tenant.id,
+          },
+        },
+        include: {
+          lease: {
+            include: {
+              tenant: true,
+              unit: true,
+              property: true,
+            },
+          },
+        },
+        orderBy: {
+          paymentDate: "desc",
+        },
+      });
+
+      return res.json(payments);
+    } catch (error) {
+      console.error("Error fetching tenant payments:", error);
+      return res.status(500).json({
+        error: error.message || "Failed to fetch tenant payments",
+      });
+    }
+  }
+);
+
+
 
 /* -------------------- GET ALL -------------------- */
 
