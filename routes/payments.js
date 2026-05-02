@@ -337,21 +337,7 @@ async function sendNewPaymentToAdminEmail({ tenant, payment }) {
 </div>
 `,
     });
-console.log("=== ADMIN PAYMENT EMAIL START ===");
-console.log("ADMIN EMAIL FROM SETTINGS:", adminEmail);
-console.log("TENANT EMAIL:", tenantEmail);
-console.log("SMTP USER:", process.env.SMTP_USER);
 
-const info = await transporter.sendMail({
-  from: `"${companyName}" <${process.env.EMAIL_FROM || process.env.SMTP_USER}>`,
-  to: adminEmail,
-  replyTo: tenantEmail !== "N/A" ? tenantEmail : undefined,
-  subject: `New tenant payment submitted - ${companyName}`,
-  html: `... ton html ...`,
-});
-
-console.log("ADMIN PAYMENT EMAIL SENT:", info.messageId);
-console.log("=== ADMIN PAYMENT EMAIL END ===");
     console.log("Admin payment email sent successfully.");
   } catch (error) {
     console.error("New payment admin email error full:", error);
