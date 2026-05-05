@@ -12,6 +12,11 @@ router.get("/", requireAuth, requireRole("ADMIN", "OWNER"), async (req, res) => 
   try {
     const organizationId = getOrganizationId(req);
 
+    return res.json({
+  test: "DASHBOARD LOCAL ROUTE OK",
+  organizationId,
+});
+
     if (!organizationId) {
       return res.status(403).json({ error: "Organization is required" });
     }
