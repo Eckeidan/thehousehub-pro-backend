@@ -107,6 +107,18 @@ app.use("/api/tenant/payments", tenantPaymentsRoutes);
 
 app.use("/api/public", publicRoutes);
 
+app.use((req, res, next) => {
+  if (!req.user) return next();
+
+  if (!req.user.organizationId) {
+    return res.status(403).json({
+      error: "No organization attached to user"
+    });
+  }
+
+  next();
+});
+
 
 
 

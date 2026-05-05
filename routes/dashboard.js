@@ -1,29 +1,57 @@
 const express = require("express");
 const prisma = require("../lib/prisma");
+const { requireAuth, requireRole } = require("../middleware/auth");
 
 const router = express.Router();
 
-router.get("/", async (req, res) => {
+function requireOrg(req, res) {
+  const organizationId = req.user?.organizationId;
+
+  if (!organizationId) {
+    res.status(403).json({ error: "Organization is required" });
+    return null;
+  }
+
+  return organizationId;
+}
+
+router.get("/", requireAuth, requireRole("ADMIN", "OWNER"), async (req, res) => {
   try {
-    const totalProperties = await prisma.property.count();
-    const totalUnits = await prisma.unit.count();
-    const totalTenants = await prisma.tenant.count();
+    const organizationId = requireOrg(req, res);
+    if (!organizationId) return;
+
+    const totalProperties = await prisma.property.count({
+      where: { organizationId },
+    });
+
+    const totalUnits = await prisma.unit.count({
+      where: { organizationId },
+    });
+
+    const totalTenants = await prisma.tenant.count({
+      where: { organizationId },
+    });
+
     const openMaintenanceRequests = await prisma.maintenanceRequest.count({
       where: {
-        status: "open",
+        organizationId,
+        status: {
+          in: ["OPEN", "IN_PROGRESS"],
+        },
       },
     });
 
     const occupiedUnits = await prisma.unit.count({
       where: {
-        status: "occupied",
+        organizationId,
+        occupancyStatus: "OCCUPIED",
       },
     });
 
     const occupancyRate =
       totalUnits > 0 ? Math.round((occupiedUnits / totalUnits) * 100) : 0;
 
-    res.json({
+    return res.json({
       totalProperties,
       totalUnits,
       totalTenants,
@@ -32,7 +60,7 @@ router.get("/", async (req, res) => {
     });
   } catch (error) {
     console.error("Error loading dashboard stats:", error);
-    res.status(500).json({ error: "Failed to load dashboard data" });
+    return res.status(500).json({ error: "Failed to load dashboard data" });
   }
 });
 

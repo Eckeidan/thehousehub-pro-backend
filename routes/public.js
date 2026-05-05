@@ -30,7 +30,7 @@ function createTransporter() {
 }
 
 async function sendLandlordWelcomeEmail({ to, fullName, companyName, password }) {
-  const appUrl = process.env.FRONTEND_URL || "https://thehousehub.app/login?email=${email}";
+  const appUrl = process.env.FRONTEND_URL || "https://thehousehub.app/login";
 
   const transporter = createTransporter();
 

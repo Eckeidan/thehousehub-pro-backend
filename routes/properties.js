@@ -1,14 +1,30 @@
 const express = require("express");
 const prisma = require("../lib/prisma");
+const { requireAuth, requireRole } = require("../middleware/auth");
 
 const router = express.Router();
+
+function getOrganizationId(req) {
+  return req.user?.organizationId || null;
+}
+
+router.use(requireAuth);
+router.use(requireRole("ADMIN", "OWNER"));
 
 /* GET all properties */
 router.get("/", async (req, res) => {
   try {
+    const organizationId = getOrganizationId(req);
+
+    if (!organizationId) {
+      return res.status(403).json({ error: "Organization is required" });
+    }
+
     const properties = await prisma.property.findMany({
+      where: { organizationId },
       include: {
         tenants: {
+          where: { organizationId },
           select: {
             id: true,
             firstName: true,
@@ -20,52 +36,104 @@ router.get("/", async (req, res) => {
         },
         propertyImages: true,
       },
-      orderBy: {
-        createdAt: "desc",
-      },
+      orderBy: { createdAt: "desc" },
     });
+
+    console.log(
+      "PROPERTIES RETURNED:",
+      properties.map((p) => ({
+        code: p.code,
+        organizationId: p.organizationId,
+      }))
+    );
 
     const formattedProperties = properties.map((property) => {
       const activeTenant = property.tenants.find((tenant) => tenant.isActive);
 
       return {
-        ...property,
-        isOccupied: !!activeTenant,
+        id: property.id,
+        code: property.code,
+        organizationId: property.organizationId,
+
+        name: property.name,
+        addressLine1: property.addressLine1,
+        addressLine2: property.addressLine2,
+        city: property.city,
+        state: property.state,
+        postalCode: property.postalCode,
+        country: property.country,
+        propertyType: property.propertyType,
+        unitsCount: property.unitsCount,
+        monthlyRent: property.monthlyRent,
+        description: property.description,
+        bedrooms: property.bedrooms,
+        bathrooms: property.bathrooms,
+        areaSqm: property.areaSqm,
+        floor: property.floor,
+        furnishingStatus: property.furnishingStatus,
+        parkingSpaces: property.parkingSpaces,
+        availableFrom: property.availableFrom,
+        ownerName: property.ownerName,
         occupancyStatus: activeTenant ? "OCCUPIED" : "AVAILABLE",
+        isActive: property.isActive,
+
+        tenants: property.tenants,
+        propertyImages: property.propertyImages,
+        isOccupied: !!activeTenant,
         activeTenant: activeTenant || null,
       };
     });
 
-    res.json(formattedProperties);
+    return res.json(formattedProperties);
   } catch (error) {
     console.error("Error fetching properties:", error);
-    res.status(500).json({ error: "Failed to fetch properties" });
+    return res.status(500).json({ error: "Failed to fetch properties" });
   }
 });
 
 /* GET one property by id */
 router.get("/:id", async (req, res) => {
   try {
+    const organizationId = getOrganizationId(req);
     const { id } = req.params;
 
-    const property = await prisma.property.findUnique({
-      where: { id },
+    console.log("PROPERTY DETAIL ORG:", organizationId);
+    console.log("USER:", req.user);
+
+    if (!organizationId) {
+      return res.status(403).json({ error: "Organization is required" });
+    }
+
+    const property = await prisma.property.findFirst({
+      where: {
+        id,
+        organizationId,
+      },
       include: {
         tenants: {
-          orderBy: {
-            createdAt: "desc",
-          },
+          where: { organizationId },
+          orderBy: { createdAt: "desc" },
         },
-        maintenanceRequests: true,
-        rentPayments: true,
-        expenses: true,
-        incomes: true,
-        documents: true,
-        communications: true,
+        maintenanceRequests: {
+          where: { organizationId },
+        },
+        documents: {
+          where: { organizationId },
+        },
+        rentPayments: {
+          where: { organizationId },
+        },
+        expenses: {
+          where: { organizationId },
+        },
+        incomes: {
+          where: { organizationId },
+        },
+        communications: {
+          where: { organizationId },
+        },
         propertyImages: {
-          orderBy: {
-            sortOrder: "asc",
-          },
+          orderBy: { sortOrder: "asc" },
         },
       },
     });
@@ -76,21 +144,28 @@ router.get("/:id", async (req, res) => {
 
     const activeTenant = property.tenants.find((tenant) => tenant.isActive);
 
-    res.json({
+    return res.json({
       ...property,
+      organizationId: property.organizationId,
       isOccupied: !!activeTenant,
       occupancyStatus: activeTenant ? "OCCUPIED" : "AVAILABLE",
       activeTenant: activeTenant || null,
     });
   } catch (error) {
     console.error("Error fetching property:", error);
-    res.status(500).json({ error: "Failed to fetch property" });
+    return res.status(500).json({ error: "Failed to fetch property" });
   }
 });
 
 /* CREATE property */
 router.post("/", async (req, res) => {
   try {
+    const organizationId = getOrganizationId(req);
+
+    if (!organizationId) {
+      return res.status(403).json({ error: "Organization is required" });
+    }
+
     const {
       code,
       name,
@@ -125,8 +200,14 @@ router.post("/", async (req, res) => {
       });
     }
 
+    console.log("CREATE PROPERTY REQ USER:", req.user);
+    console.log("CREATE PROPERTY ORG:", organizationId);
+    console.log("CREATE PROPERTY BODY:", req.body);
+
     const property = await prisma.property.create({
       data: {
+        organizationId,
+
         code,
         name: name || null,
         addressLine1,
@@ -155,17 +236,40 @@ router.post("/", async (req, res) => {
       },
     });
 
-    res.status(201).json(property);
+    console.log("PROPERTY CREATED RESULT:", property);
+
+    console.log("PROPERTY CREATED:", {
+      code: property.code,
+      organizationId: property.organizationId,
+    });
+
+    return res.status(201).json(property);
   } catch (error) {
     console.error("Error creating property:", error);
-    res.status(500).json({ error: error.message || "Failed to create property" });
+    return res
+      .status(500)
+      .json({ error: error.message || "Failed to create property" });
   }
 });
 
 /* UPDATE property */
 router.put("/:id", async (req, res) => {
   try {
+    const organizationId = getOrganizationId(req);
     const { id } = req.params;
+
+    if (!organizationId) {
+      return res.status(403).json({ error: "Organization is required" });
+    }
+
+    const existing = await prisma.property.findFirst({
+      where: { id, organizationId },
+    });
+
+    if (!existing) {
+      return res.status(404).json({ error: "Property not found" });
+    }
+
     const {
       code,
       name,
@@ -225,26 +329,43 @@ router.put("/:id", async (req, res) => {
       },
     });
 
-    res.json(property);
+    return res.json(property);
   } catch (error) {
     console.error("Error updating property:", error);
-    res.status(500).json({ error: error.message || "Failed to update property" });
+    return res
+      .status(500)
+      .json({ error: error.message || "Failed to update property" });
   }
 });
 
 /* DELETE property */
 router.delete("/:id", async (req, res) => {
   try {
+    const organizationId = getOrganizationId(req);
     const { id } = req.params;
+
+    if (!organizationId) {
+      return res.status(403).json({ error: "Organization is required" });
+    }
+
+    const existing = await prisma.property.findFirst({
+      where: { id, organizationId },
+    });
+
+    if (!existing) {
+      return res.status(404).json({ error: "Property not found" });
+    }
 
     await prisma.property.delete({
       where: { id },
     });
 
-    res.json({ message: "Property deleted successfully" });
+    return res.json({ message: "Property deleted successfully" });
   } catch (error) {
     console.error("Error deleting property:", error);
-    res.status(500).json({ error: error.message || "Failed to delete property" });
+    return res
+      .status(500)
+      .json({ error: error.message || "Failed to delete property" });
   }
 });
 
