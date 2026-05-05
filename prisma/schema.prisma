@@ -35,11 +35,13 @@ model Property {
   isActive            Boolean              @default(true)
   createdAt           DateTime             @default(now())
   updatedAt           DateTime             @updatedAt
+  organizationId      String?
   communications      Communication[]
   documents           Document[]
   expenses            Expense[]
   incomes             Income[]
   leases              Lease[]
+  organization        Organization?        @relation(fields: [organizationId], references: [id])
   propertyImages      PropertyImage[]
   rentPayments        RentPayment[]
   tenants             Tenant[]
@@ -51,6 +53,7 @@ model Property {
   @@index([city])
   @@index([propertyType])
   @@index([isActive])
+  @@index([organizationId])
 }
 
 model Tenant {
@@ -73,11 +76,13 @@ model Tenant {
   createdAt             DateTime             @default(now())
   updatedAt             DateTime             @updatedAt
   unitId                String?
+  organizationId        String?
   communications        Communication[]
   documents             Document[]
   leases                Lease[]
   notifications         Notification[]
   rentPayments          RentPayment[]
+  organization          Organization?        @relation(fields: [organizationId], references: [id])
   property              Property?            @relation(fields: [propertyId], references: [id], onDelete: Cascade)
   unit                  Unit?                @relation(fields: [unitId], references: [id])
   user                  User?
@@ -89,6 +94,7 @@ model Tenant {
   @@index([phone])
   @@index([leaseStatus])
   @@index([isActive])
+  @@index([organizationId])
 }
 
 model MaintenanceRequest {
@@ -121,8 +127,10 @@ model MaintenanceRequest {
   estimatedTotalCost     Decimal?            @db.Decimal(12, 2)
   materialsNotes         String?
   estimatedCost          Decimal?            @db.Decimal(12, 2)
+  organizationId         String?
   aiRecommendations      AIRecommendation[]
   contractor             Contractor?         @relation(fields: [contractorId], references: [id])
+  organization           Organization?       @relation(fields: [organizationId], references: [id])
   property               Property            @relation(fields: [propertyId], references: [id], onDelete: Cascade)
   tenant                 Tenant?             @relation(fields: [tenantId], references: [id])
   unit                   Unit?               @relation(fields: [unitId], references: [id])
@@ -135,6 +143,7 @@ model MaintenanceRequest {
   @@index([priority])
   @@index([category])
   @@index([dueDate])
+  @@index([organizationId])
   @@map("maintenance_requests")
 }
 
@@ -230,25 +239,28 @@ model Income {
 }
 
 model Document {
-  id                 String       @id @default(cuid())
+  id                 String        @id @default(cuid())
   propertyId         String?
   tenantId           String?
   documentName       String
-  type               DocumentType @default(OTHER)
+  type               DocumentType  @default(OTHER)
   fileUrl            String
   mimeType           String?
-  accessibleToTenant Boolean      @default(false)
+  accessibleToTenant Boolean       @default(false)
   uploadedBy         String?
   notes              String?
-  createdAt          DateTime     @default(now())
-  updatedAt          DateTime     @updatedAt
-  property           Property?    @relation(fields: [propertyId], references: [id], onDelete: Cascade)
-  tenant             Tenant?      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+  organizationId     String?
+  organization       Organization? @relation(fields: [organizationId], references: [id])
+  property           Property?     @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  tenant             Tenant?       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@index([propertyId])
   @@index([tenantId])
   @@index([type])
   @@index([accessibleToTenant])
+  @@index([organizationId])
 }
 
 model Communication {
@@ -371,16 +383,19 @@ model Unit {
   notes               String?
   createdAt           DateTime             @default(now())
   updatedAt           DateTime             @updatedAt
+  organizationId      String?
   leases              Lease[]
   tenants             Tenant[]
   leaseChangeRequests LeaseChangeRequest[]
   maintenanceRequests MaintenanceRequest[]
+  organization        Organization?        @relation(fields: [organizationId], references: [id])
   property            Property             @relation(fields: [propertyId], references: [id], onDelete: Cascade)
 
   @@index([propertyId])
   @@index([unitCode])
   @@index([occupancyStatus])
   @@index([isActive])
+  @@index([organizationId])
   @@map("units")
 }
 
@@ -398,6 +413,8 @@ model Lease {
   notes          String?
   createdAt      DateTime             @default(now())
   updatedAt      DateTime             @updatedAt
+  organizationId String?
+  organization   Organization?        @relation(fields: [organizationId], references: [id])
   property       Property             @relation(fields: [propertyId], references: [id], onDelete: Cascade)
   tenant         Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   unit           Unit                 @relation(fields: [unitId], references: [id], onDelete: Cascade)
@@ -407,28 +424,32 @@ model Lease {
   @@index([tenantId])
   @@index([unitId])
   @@index([propertyId])
+  @@index([organizationId])
   @@index([status])
 }
 
 model Payment {
-  id            String        @id @default(cuid())
-  leaseId       String
-  amount        Float
-  paymentDate   DateTime
-  paymentMethod PaymentMethod @default(CASH)
-  status        PaymentStatus @default(PAID)
-  reference     String?
-  notes         String?
-  createdAt     DateTime      @default(now())
-  updatedAt     DateTime      @updatedAt
-  proofFileName String?
-  proofImageUrl String?
-  proofMimeType String?
-  lease         Lease         @relation(fields: [leaseId], references: [id], onDelete: Cascade)
+  id             String        @id @default(cuid())
+  leaseId        String
+  amount         Float
+  paymentDate    DateTime
+  paymentMethod  PaymentMethod @default(CASH)
+  status         PaymentStatus @default(PAID)
+  reference      String?
+  notes          String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  proofFileName  String?
+  proofImageUrl  String?
+  proofMimeType  String?
+  organizationId String?
+  lease          Lease         @relation(fields: [leaseId], references: [id], onDelete: Cascade)
+  organization   Organization? @relation(fields: [organizationId], references: [id])
 
   @@index([leaseId])
   @@index([paymentDate])
   @@index([status])
+  @@index([organizationId])
 }
 
 model Setting {
@@ -453,13 +474,16 @@ model User {
   tenantId              String?              @unique
   createdAt             DateTime             @default(now())
   updatedAt             DateTime             @updatedAt
+  organizationId        String?
   notifications         Notification[]
+  organization          Organization?        @relation(fields: [organizationId], references: [id])
   tenant                Tenant?              @relation(fields: [tenantId], references: [id])
   requestedLeaseChanges LeaseChangeRequest[] @relation("LeaseChangeRequestedBy")
 
   @@index([email])
   @@index([role])
   @@index([isActive])
+  @@index([organizationId])
 }
 
 model Notification {
@@ -520,30 +544,44 @@ model LeaseChangeRequest {
 }
 
 model AppSetting {
-  id          String @id @default(cuid())
-  companyName String @default("PropertyOS Inc.")
-  email       String @default("admin@propertyos.com")
-  currency    String @default("USD")
-  timezone    String @default("UTC")
-
-  logoUrl      String?
-  primaryColor String  @default("#1f3270")
-  supportEmail String?
-
-  bankName            String?
+  id                  String   @id @default(cuid())
+  companyName         String   @default("PropertyOS Inc.")
+  email               String   @default("admin@propertyos.com")
+  currency            String   @default("USD")
+  timezone            String   @default("UTC")
+  tenantAccessDefault Boolean  @default(true)
+  notifications       Boolean  @default(true)
+  maintenanceAlerts   Boolean  @default(true)
+  leaseReminders      Boolean  @default(true)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
   bankAccountName     String?
   bankAccountNumber   String?
+  bankName            String?
+  lateFeeAmount       Float    @default(0)
+  logoUrl             String?
   paymentInstructions String?
-  rentDueDay          Int     @default(1)
-  lateFeeAmount       Float   @default(0)
+  primaryColor        String   @default("#1f3270")
+  rentDueDay          Int      @default(1)
+  supportEmail        String?
+}
 
-  tenantAccessDefault Boolean @default(true)
-  notifications       Boolean @default(true)
-  maintenanceAlerts   Boolean @default(true)
-  leaseReminders      Boolean @default(true)
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+model Organization {
+  id                  String               @id @default(cuid())
+  name                String
+  email               String
+  phone               String?
+  companyName         String?
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  documents           Document[]
+  leases              Lease[]
+  payments            Payment[]
+  properties          Property[]
+  tenants             Tenant[]
+  users               User[]
+  maintenanceRequests MaintenanceRequest[]
+  units               Unit[]
 }
 
 enum LeaseChangeType {

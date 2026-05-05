@@ -86,6 +86,7 @@ router.post("/login", async (req, res) => {
         email: user.email,
         role: user.role,
         tenantId: user.tenantId || null,
+        organizationId: user.organizationId || null,
       },
       process.env.JWT_SECRET || "propertyos_dev_secret",
       { expiresIn: "7d" }
@@ -101,6 +102,7 @@ router.post("/login", async (req, res) => {
         email: user.email,
         role: user.role,
         tenantId: user.tenantId || null,
+        organizationId: user.organizationId || null,
       },
       redirectTo: buildRedirectPath(user.role),
     });
@@ -150,6 +152,7 @@ router.get("/me", requireAuth, async (req, res) => {
         role: user.role,
         isActive: user.isActive,
         tenantId: user.tenantId,
+        organizationId: user.organizationId || null,
         tenant: user.tenant || null,
       },
     });
