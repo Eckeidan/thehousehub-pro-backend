@@ -4,21 +4,20 @@ const { requireAuth, requireRole } = require("../middleware/auth");
 
 const router = express.Router();
 
-function requireOrg(req, res) {
-  const organizationId = req.user?.organizationId;
-
-  if (!organizationId) {
-    res.status(403).json({ error: "Organization is required" });
-    return null;
-  }
-
-  return organizationId;
+function getOrganizationId(req) {
+  return req.user?.organizationId || null;
 }
 
 router.get("/", requireAuth, requireRole("ADMIN", "OWNER"), async (req, res) => {
   try {
-    const organizationId = requireOrg(req, res);
-    if (!organizationId) return;
+    const organizationId = getOrganizationId(req);
+
+    if (!organizationId) {
+      return res.status(403).json({ error: "Organization is required" });
+    }
+
+    console.log("DASHBOARD ORG:", organizationId);
+    console.log("DASHBOARD USER:", req.user);
 
     const totalProperties = await prisma.property.count({
       where: { organizationId },
@@ -32,7 +31,7 @@ router.get("/", requireAuth, requireRole("ADMIN", "OWNER"), async (req, res) => 
       where: { organizationId },
     });
 
-    const openMaintenanceRequests = await prisma.maintenanceRequest.count({
+    const openMaintenance = await prisma.maintenanceRequest.count({
       where: {
         organizationId,
         status: {
@@ -52,15 +51,19 @@ router.get("/", requireAuth, requireRole("ADMIN", "OWNER"), async (req, res) => 
       totalUnits > 0 ? Math.round((occupiedUnits / totalUnits) * 100) : 0;
 
     return res.json({
+      organizationId,
       totalProperties,
       totalUnits,
       totalTenants,
       occupancyRate,
-      openMaintenanceRequests,
+      openMaintenance,
+      openMaintenanceRequests: openMaintenance,
     });
   } catch (error) {
     console.error("Error loading dashboard stats:", error);
-    return res.status(500).json({ error: "Failed to load dashboard data" });
+    return res.status(500).json({
+      error: error.message || "Failed to load dashboard data",
+    });
   }
 });
 
