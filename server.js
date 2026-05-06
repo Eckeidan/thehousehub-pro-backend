@@ -5,6 +5,8 @@ require("dotenv").config();
 
 const prisma = require("./lib/prisma");
 
+const dashboardRoutes = require("./routes/dashboard");
+
 const authRoutes = require("./routes/auth");
 const propertiesRoutes = require("./routes/properties");
 const propertyImagesRoutes = require("./routes/propertyImages");
@@ -84,6 +86,9 @@ app.get("/api/health", (req, res) => {
 /* API Routes */
 app.use("/api/auth", authRoutes);
 
+app.use("/api/dashboard", dashboardRoutes);
+console.log("Dashboard route mounted: /api/dashboard");
+
 app.use("/api/properties", propertiesRoutes);
 app.use("/api/property-images", propertyImagesRoutes);
 app.use("/api/tenants", tenantsRoutes);
@@ -127,68 +132,6 @@ app.use((req, res, next) => {
 console.log("Tenant contact route mounted: /api/tenant/contact");
 
 /* Dashboard */
-app.get("/api/dashboard", async (req, res) => {
-  try {
-    const [properties, tenants, maintenanceRequests, units] = await Promise.all([
-      prisma.property.findMany({
-        select: {
-          id: true,
-          unitsCount: true,
-          isActive: true,
-        },
-      }),
-      prisma.tenant.findMany({
-        select: {
-          id: true,
-          isActive: true,
-        },
-      }),
-      prisma.maintenanceRequest.findMany({
-        select: {
-          id: true,
-          status: true,
-        },
-      }),
-      prisma.unit.findMany({
-        select: {
-          id: true,
-          occupancyStatus: true,
-          isActive: true,
-        },
-      }),
-    ]);
-
-    const totalProperties = properties.length;
-
-    const totalUnits =
-      units.length > 0
-        ? units.filter((unit) => unit.isActive).length
-        : properties.reduce(
-            (sum, property) => sum + (property.unitsCount || 0),
-            0
-          );
-
-    const totalTenants = tenants.filter((tenant) => tenant.isActive).length;
-
-    const openMaintenance = maintenanceRequests.filter(
-      (item) => item.status !== "CLOSED" && item.status !== "CANCELLED"
-    ).length;
-
-    const occupancyRate =
-      totalUnits > 0 ? Math.round((totalTenants / totalUnits) * 100) : 0;
-
-    return res.json({
-      totalProperties,
-      totalUnits,
-      totalTenants,
-      occupancyRate,
-      openMaintenance,
-    });
-  } catch (error) {
-    console.error("Dashboard error:", error);
-    return res.status(500).json({ error: "Failed to load dashboard" });
-  }
-});
 
 /* API 404 fallback */
 app.use("/api", (req, res) => {

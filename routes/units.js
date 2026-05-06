@@ -1,22 +1,14 @@
 const express = require("express");
 const prisma = require("../lib/prisma");
+const { requireAuth, requireRole } = require("../middleware/auth");
 
 const router = express.Router();
 
-function generateNextUnitCode(propertyCode, existingUnitCodes = []) {
-  const prefix = `${propertyCode}-U`;
+router.use(requireAuth);
+router.use(requireRole("ADMIN", "OWNER"));
 
-  const numbers = existingUnitCodes
-    .filter((code) => typeof code === "string" && code.startsWith(prefix))
-    .map((code) => {
-      const match = code.match(/-U(\d+)$/);
-      return match ? Number(match[1]) : 0;
-    })
-    .filter((num) => !Number.isNaN(num));
-
-  const nextNumber = numbers.length > 0 ? Math.max(...numbers) + 1 : 1;
-
-  return `${prefix}${String(nextNumber).padStart(2, "0")}`;
+function getOrganizationId(req) {
+  return req.user?.organizationId || null;
 }
 
 function sanitizePropertyCode(code) {
@@ -44,29 +36,42 @@ function generateNextUnitCode(propertyCode, existingUnitCodes = []) {
   return `${prefix}${String(nextNumber).padStart(2, "0")}`;
 }
 
-/* =========================
-   GET /api/units
-   ========================= */
+/* GET /api/units */
 router.get("/", async (req, res) => {
   try {
+    const organizationId = getOrganizationId(req);
+
+    console.log("UNITS ORG:", organizationId);
+
+    if (!organizationId) {
+      return res.status(403).json({ error: "Organization is required" });
+    }
+
     const { propertyId, occupancyStatus, search } = req.query;
 
     const where = {
-      ...(propertyId ? { propertyId } : {}),
-      ...(occupancyStatus ? { occupancyStatus } : {}),
+      organizationId,
+      ...(propertyId ? { propertyId: String(propertyId) } : {}),
+      ...(occupancyStatus ? { occupancyStatus: String(occupancyStatus) } : {}),
       ...(search
         ? {
             OR: [
-              { unitCode: { contains: search, mode: "insensitive" } },
-              { unitName: { contains: search, mode: "insensitive" } },
-              { notes: { contains: search, mode: "insensitive" } },
+              { unitCode: { contains: String(search), mode: "insensitive" } },
+              { unitName: { contains: String(search), mode: "insensitive" } },
+              { notes: { contains: String(search), mode: "insensitive" } },
               {
                 property: {
+                  organizationId,
                   OR: [
-                    { name: { contains: search, mode: "insensitive" } },
-                    { code: { contains: search, mode: "insensitive" } },
-                    { addressLine1: { contains: search, mode: "insensitive" } },
-                    { city: { contains: search, mode: "insensitive" } },
+                    { name: { contains: String(search), mode: "insensitive" } },
+                    { code: { contains: String(search), mode: "insensitive" } },
+                    {
+                      addressLine1: {
+                        contains: String(search),
+                        mode: "insensitive",
+                      },
+                    },
+                    { city: { contains: String(search), mode: "insensitive" } },
                   ],
                 },
               },
@@ -80,32 +85,52 @@ router.get("/", async (req, res) => {
       include: {
         property: true,
       },
-      orderBy: [
-        { propertyId: "asc" },
-        { unitCode: "asc" },
-      ],
+      orderBy: [{ propertyId: "asc" }, { unitCode: "asc" }],
     });
 
-    res.json(units);
+    return res.json(units);
   } catch (error) {
     console.error("Error fetching units:", error);
-    res.status(500).json({ error: "Failed to fetch units" });
+    return res.status(500).json({ error: "Failed to fetch units" });
   }
 });
 
-/* =========================
-   GET /api/units/stats
-   ========================= */
+/* GET /api/units/stats */
 router.get("/stats", async (req, res) => {
   try {
+    const organizationId = getOrganizationId(req);
+
+    if (!organizationId) {
+      return res.status(403).json({ error: "Organization is required" });
+    }
+
     const [total, available, occupied, inactive] = await Promise.all([
-      prisma.unit.count(),
-      prisma.unit.count({ where: { occupancyStatus: "AVAILABLE", isActive: true } }),
-      prisma.unit.count({ where: { occupancyStatus: "OCCUPIED", isActive: true } }),
-      prisma.unit.count({ where: { isActive: false } }),
+      prisma.unit.count({
+        where: { organizationId },
+      }),
+      prisma.unit.count({
+        where: {
+          organizationId,
+          occupancyStatus: "AVAILABLE",
+          isActive: true,
+        },
+      }),
+      prisma.unit.count({
+        where: {
+          organizationId,
+          occupancyStatus: "OCCUPIED",
+          isActive: true,
+        },
+      }),
+      prisma.unit.count({
+        where: {
+          organizationId,
+          isActive: false,
+        },
+      }),
     ]);
 
-    res.json({
+    return res.json({
       total,
       available,
       occupied,
@@ -113,17 +138,24 @@ router.get("/stats", async (req, res) => {
     });
   } catch (error) {
     console.error("Error fetching unit stats:", error);
-    res.status(500).json({ error: "Failed to fetch unit stats" });
+    return res.status(500).json({ error: "Failed to fetch unit stats" });
   }
 });
 
-/* =========================
-   GET /api/units/:id
-   ========================= */
+/* GET /api/units/:id */
 router.get("/:id", async (req, res) => {
   try {
-    const unit = await prisma.unit.findUnique({
-      where: { id: req.params.id },
+    const organizationId = getOrganizationId(req);
+
+    if (!organizationId) {
+      return res.status(403).json({ error: "Organization is required" });
+    }
+
+    const unit = await prisma.unit.findFirst({
+      where: {
+        id: req.params.id,
+        organizationId,
+      },
       include: {
         property: true,
       },
@@ -133,18 +165,22 @@ router.get("/:id", async (req, res) => {
       return res.status(404).json({ error: "Unit not found" });
     }
 
-    res.json(unit);
+    return res.json(unit);
   } catch (error) {
     console.error("Error fetching unit:", error);
-    res.status(500).json({ error: "Failed to fetch unit" });
+    return res.status(500).json({ error: "Failed to fetch unit" });
   }
 });
 
-/* =========================
-   POST /api/units
-   ========================= */
+/* POST /api/units */
 router.post("/", async (req, res) => {
   try {
+    const organizationId = getOrganizationId(req);
+
+    if (!organizationId) {
+      return res.status(403).json({ error: "Organization is required" });
+    }
+
     const {
       propertyId,
       unitName,
@@ -162,21 +198,28 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ error: "Property is required" });
     }
 
-    const property = await prisma.property.findUnique({
-      where: { id: propertyId },
+    const property = await prisma.property.findFirst({
+      where: {
+        id: propertyId,
+        organizationId,
+      },
       select: {
         id: true,
         code: true,
         name: true,
+        organizationId: true,
       },
     });
 
     if (!property) {
-      return res.status(404).json({ error: "Property not found" });
+      return res.status(404).json({ error: "Property not found in your organization" });
     }
 
     const existingUnits = await prisma.unit.findMany({
-      where: { propertyId },
+      where: {
+        propertyId,
+        organizationId,
+      },
       select: { unitCode: true },
     });
 
@@ -185,14 +228,15 @@ router.post("/", async (req, res) => {
       existingUnits.map((u) => u.unitCode)
     );
 
-    const existingUnit = await prisma.unit.findFirst({
+    const duplicate = await prisma.unit.findFirst({
       where: {
+        organizationId,
         propertyId,
         unitCode: finalUnitCode,
       },
     });
 
-    if (existingUnit) {
+    if (duplicate) {
       return res.status(400).json({
         error: "A unit with this code already exists for this property",
       });
@@ -200,6 +244,7 @@ router.post("/", async (req, res) => {
 
     const unit = await prisma.unit.create({
       data: {
+        organizationId,
         propertyId,
         unitCode: finalUnitCode,
         unitName: unitName ? String(unitName).trim() : null,
@@ -232,18 +277,22 @@ router.post("/", async (req, res) => {
       },
     });
 
-    res.status(201).json(unit);
+    return res.status(201).json(unit);
   } catch (error) {
     console.error("Error creating unit:", error);
-    res.status(500).json({ error: error.message || "Failed to create unit" });
+    return res.status(500).json({ error: error.message || "Failed to create unit" });
   }
 });
 
-/* =========================
-   PUT /api/units/:id
-   ========================= */
+/* PUT /api/units/:id */
 router.put("/:id", async (req, res) => {
   try {
+    const organizationId = getOrganizationId(req);
+
+    if (!organizationId) {
+      return res.status(403).json({ error: "Organization is required" });
+    }
+
     const {
       propertyId,
       unitCode,
@@ -258,8 +307,11 @@ router.put("/:id", async (req, res) => {
       notes,
     } = req.body || {};
 
-    const existing = await prisma.unit.findUnique({
-      where: { id: req.params.id },
+    const existing = await prisma.unit.findFirst({
+      where: {
+        id: req.params.id,
+        organizationId,
+      },
     });
 
     if (!existing) {
@@ -267,12 +319,15 @@ router.put("/:id", async (req, res) => {
     }
 
     if (propertyId) {
-      const property = await prisma.property.findUnique({
-        where: { id: propertyId },
+      const property = await prisma.property.findFirst({
+        where: {
+          id: propertyId,
+          organizationId,
+        },
       });
 
       if (!property) {
-        return res.status(404).json({ error: "Property not found" });
+        return res.status(404).json({ error: "Property not found in your organization" });
       }
     }
 
@@ -282,6 +337,7 @@ router.put("/:id", async (req, res) => {
 
     const duplicate = await prisma.unit.findFirst({
       where: {
+        organizationId,
         propertyId: nextPropertyId,
         unitCode: nextUnitCode,
         NOT: {
@@ -306,8 +362,7 @@ router.put("/:id", async (req, res) => {
           : {}),
         ...(floor !== undefined
           ? {
-              floor:
-                floor !== null && floor !== "" ? Number(floor) : null,
+              floor: floor !== null && floor !== "" ? Number(floor) : null,
             }
           : {}),
         ...(bedrooms !== undefined
@@ -319,9 +374,7 @@ router.put("/:id", async (req, res) => {
         ...(bathrooms !== undefined
           ? {
               bathrooms:
-                bathrooms !== null && bathrooms !== ""
-                  ? Number(bathrooms)
-                  : null,
+                bathrooms !== null && bathrooms !== "" ? Number(bathrooms) : null,
             }
           : {}),
         ...(areaSqm !== undefined
@@ -349,20 +402,27 @@ router.put("/:id", async (req, res) => {
       },
     });
 
-    res.json(unit);
+    return res.json(unit);
   } catch (error) {
     console.error("Error updating unit:", error);
-    res.status(500).json({ error: error.message || "Failed to update unit" });
+    return res.status(500).json({ error: error.message || "Failed to update unit" });
   }
 });
 
-/* =========================
-   DELETE /api/units/:id
-   ========================= */
+/* DELETE /api/units/:id */
 router.delete("/:id", async (req, res) => {
   try {
-    const existing = await prisma.unit.findUnique({
-      where: { id: req.params.id },
+    const organizationId = getOrganizationId(req);
+
+    if (!organizationId) {
+      return res.status(403).json({ error: "Organization is required" });
+    }
+
+    const existing = await prisma.unit.findFirst({
+      where: {
+        id: req.params.id,
+        organizationId,
+      },
     });
 
     if (!existing) {
@@ -373,10 +433,10 @@ router.delete("/:id", async (req, res) => {
       where: { id: req.params.id },
     });
 
-    res.json({ message: "Unit deleted successfully" });
+    return res.json({ message: "Unit deleted successfully" });
   } catch (error) {
     console.error("Error deleting unit:", error);
-    res.status(500).json({ error: "Failed to delete unit" });
+    return res.status(500).json({ error: "Failed to delete unit" });
   }
 });
 

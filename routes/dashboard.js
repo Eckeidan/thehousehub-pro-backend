@@ -8,68 +8,69 @@ function getOrganizationId(req) {
   return req.user?.organizationId || null;
 }
 
-router.get("/", requireAuth, requireRole("ADMIN", "OWNER"), async (req, res) => {
-  try {
-    const organizationId = getOrganizationId(req);
+router.get(
+  "/",
+  requireAuth,
+  requireRole("ADMIN", "OWNER"),
+  async (req, res) => {
+    try {
+      const organizationId = getOrganizationId(req);
 
-    return res.json({
-  test: "DASHBOARD LOCAL ROUTE OK",
-  organizationId,
-});
+      if (!organizationId) {
+        return res.status(403).json({ error: "Organization is required" });
+      }
 
-    if (!organizationId) {
-      return res.status(403).json({ error: "Organization is required" });
-    }
+      console.log("✅ DASHBOARD ORG:", organizationId);
 
-    console.log("DASHBOARD ORG:", organizationId);
-    console.log("DASHBOARD USER:", req.user);
+      /* 🔒 CRITICAL: FILTER BY organizationId */
 
-    const totalProperties = await prisma.property.count({
-      where: { organizationId },
-    });
+      const totalProperties = await prisma.property.count({
+        where: { organizationId },
+      });
 
-    const totalUnits = await prisma.unit.count({
-      where: { organizationId },
-    });
+      const totalUnits = await prisma.unit.count({
+        where: { organizationId },
+      });
 
-    const totalTenants = await prisma.tenant.count({
-      where: { organizationId },
-    });
+      const totalTenants = await prisma.tenant.count({
+        where: { organizationId },
+      });
 
-    const openMaintenance = await prisma.maintenanceRequest.count({
-      where: {
-        organizationId,
-        status: {
-          in: ["OPEN", "IN_PROGRESS"],
+      const openMaintenance = await prisma.maintenanceRequest.count({
+        where: {
+          organizationId,
+          status: {
+            in: ["OPEN", "IN_PROGRESS"],
+          },
         },
-      },
-    });
+      });
 
-    const occupiedUnits = await prisma.unit.count({
-      where: {
-        organizationId,
-        occupancyStatus: "OCCUPIED",
-      },
-    });
+      const occupiedUnits = await prisma.unit.count({
+        where: {
+          organizationId,
+          occupancyStatus: "OCCUPIED",
+        },
+      });
 
-    const occupancyRate =
-      totalUnits > 0 ? Math.round((occupiedUnits / totalUnits) * 100) : 0;
+      const occupancyRate =
+        totalUnits > 0
+          ? Math.round((occupiedUnits / totalUnits) * 100)
+          : 0;
 
-    return res.json({
-      organizationId,
-      totalProperties,
-      totalUnits,
-      totalTenants,
-      occupancyRate,
-      openMaintenance,
-      openMaintenanceRequests: openMaintenance,
-    });
-  } catch (error) {
-    console.error("Error loading dashboard stats:", error);
-    return res.status(500).json({
-      error: error.message || "Failed to load dashboard data",
-    });
+      return res.json({
+        totalProperties,
+        totalUnits,
+        totalTenants,
+        occupancyRate,
+        openMaintenance,
+      });
+    } catch (error) {
+      console.error("❌ Dashboard error:", error);
+      return res.status(500).json({
+        error: error.message || "Failed to load dashboard data",
+      });
+    }
   }
-});
+);
 
 module.exports = router;

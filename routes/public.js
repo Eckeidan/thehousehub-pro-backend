@@ -6,8 +6,7 @@ const prisma = require("../lib/prisma");
 const router = express.Router();
 
 function generatePassword(length = 10) {
-  const chars =
-    "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789@$!";
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789@$!";
   let password = "";
 
   for (let i = 0; i < length; i++) {
@@ -29,9 +28,16 @@ function createTransporter() {
   });
 }
 
-async function sendLandlordWelcomeEmail({ to, fullName, companyName, password }) {
+async function sendLandlordWelcomeEmail({
+  to,
+  fullName,
+  companyName,
+  phone,
+  address,
+  nationality,
+  password,
+}) {
   const appUrl = process.env.FRONTEND_URL || "https://thehousehub.app/login";
-
   const transporter = createTransporter();
 
   await transporter.sendMail({
@@ -40,7 +46,7 @@ async function sendLandlordWelcomeEmail({ to, fullName, companyName, password })
     subject: "Your The House Hub admin account is ready",
     html: `
       <div style="font-family:Arial,sans-serif;background:#f4f7fb;padding:24px;">
-        <div style="max-width:620px;margin:auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 12px 35px rgba(15,23,42,.10);">
+        <div style="max-width:620px;margin:auto;background:#fff;border-radius:16px;overflow:hidden;">
           <div style="background:linear-gradient(90deg,#102a67,#45C9B5);padding:24px;color:#fff;">
             <h2 style="margin:0;">Welcome to The House Hub</h2>
             <p style="margin:6px 0 0;opacity:.85;">Your landlord admin account has been created.</p>
@@ -55,6 +61,10 @@ async function sendLandlordWelcomeEmail({ to, fullName, companyName, password })
               <p><strong>Email:</strong> ${to}</p>
               <p><strong>Temporary Password:</strong> ${password}</p>
               <p><strong>Role:</strong> Admin</p>
+              <hr style="border:none;border-top:1px solid #e5e7eb;margin:14px 0;" />
+              <p><strong>Phone:</strong> ${phone || "N/A"}</p>
+              <p><strong>Address:</strong> ${address || "N/A"}</p>
+              <p><strong>Nationality:</strong> ${nationality || "N/A"}</p>
             </div>
 
             <div style="text-align:center;margin-top:26px;">
@@ -83,7 +93,14 @@ async function sendLandlordWelcomeEmail({ to, fullName, companyName, password })
  */
 router.post("/register-landlord", async (req, res) => {
   try {
-    const { name, email, companyName, phone } = req.body || {};
+    const {
+      name,
+      email,
+      companyName,
+      phone,
+      address,
+      nationality,
+    } = req.body || {};
 
     if (!name || !email || !companyName) {
       return res.status(400).json({
@@ -92,6 +109,8 @@ router.post("/register-landlord", async (req, res) => {
     }
 
     const cleanEmail = String(email).toLowerCase().trim();
+    const cleanName = String(name).trim();
+    const cleanCompanyName = String(companyName).trim();
 
     const existingUser = await prisma.user.findUnique({
       where: { email: cleanEmail },
@@ -109,16 +128,18 @@ router.post("/register-landlord", async (req, res) => {
     const result = await prisma.$transaction(async (tx) => {
       const organization = await tx.organization.create({
         data: {
-          name: companyName.trim(),
-          companyName: companyName.trim(),
+          name: cleanCompanyName,
+          companyName: cleanCompanyName,
           email: cleanEmail,
-          phone: phone || null,
+          phone: phone ? String(phone).trim() : null,
+          address: address ? String(address).trim() : null,
+          nationality: nationality ? String(nationality).trim() : null,
         },
       });
 
       const user = await tx.user.create({
         data: {
-          fullName: name.trim(),
+          fullName: cleanName,
           email: cleanEmail,
           passwordHash,
           role: "ADMIN",
@@ -132,8 +153,11 @@ router.post("/register-landlord", async (req, res) => {
 
     await sendLandlordWelcomeEmail({
       to: cleanEmail,
-      fullName: name.trim(),
-      companyName: companyName.trim(),
+      fullName: cleanName,
+      companyName: cleanCompanyName,
+      phone,
+      address,
+      nationality,
       password: temporaryPassword,
     });
 

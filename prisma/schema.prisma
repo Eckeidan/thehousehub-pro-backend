@@ -166,6 +166,9 @@ model Contractor {
   serviceCategory     String?
   maintenanceRequests MaintenanceRequest[]
 
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
   @@index([companyName])
   @@index([phone])
   @@index([serviceCategory])
@@ -582,6 +585,8 @@ model Organization {
   users               User[]
   maintenanceRequests MaintenanceRequest[]
   units               Unit[]
+
+  contractors Contractor[]
 }
 
 enum LeaseChangeType {
