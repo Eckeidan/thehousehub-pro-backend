@@ -3,10 +3,7 @@ const cors = require("cors");
 const path = require("path");
 require("dotenv").config();
 
-const prisma = require("./lib/prisma");
-
 const dashboardRoutes = require("./routes/dashboard");
-
 const authRoutes = require("./routes/auth");
 const propertiesRoutes = require("./routes/properties");
 const propertyImagesRoutes = require("./routes/propertyImages");
@@ -28,12 +25,11 @@ const tenantSettingsRoutes = require("./routes/tenantSettings");
 const tenantMaintenanceRoutes = require("./routes/tenantMaintenance");
 const tenantPaymentsRoutes = require("./routes/tenantPayments");
 const publicRoutes = require("./routes/public");
-
+const tenantChatbotRoutes = require("./routes/tenantChatbot");
 
 
 const app = express();
 
-/* Allowed origins */
 const allowedOrigins = [
   "http://localhost:3000",
   "http://localhost:3001",
@@ -43,10 +39,8 @@ const allowedOrigins = [
 ];
 
 const corsOptions = {
-  origin: function (origin, callback) {
-    if (!origin) {
-      return callback(null, true);
-    }
+  origin(origin, callback) {
+    if (!origin) return callback(null, true);
 
     if (allowedOrigins.includes(origin)) {
       return callback(null, true);
@@ -60,18 +54,14 @@ const corsOptions = {
   allowedHeaders: ["Content-Type", "Authorization"],
 };
 
-/* CORS */
 app.use(cors(corsOptions));
 app.options(/.*/, cors(corsOptions));
 
-/* Body parsers */
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-/* Static files */
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
-/* Health checks */
 app.get("/", (req, res) => {
   res.send("PropertyOS API is running");
 });
@@ -85,10 +75,9 @@ app.get("/api/health", (req, res) => {
 
 /* API Routes */
 app.use("/api/auth", authRoutes);
+app.use("/api/public", publicRoutes);
 
 app.use("/api/dashboard", dashboardRoutes);
-console.log("Dashboard route mounted: /api/dashboard");
-
 app.use("/api/properties", propertiesRoutes);
 app.use("/api/property-images", propertyImagesRoutes);
 app.use("/api/tenants", tenantsRoutes);
@@ -109,38 +98,18 @@ app.use("/api/communications", communicationsRoutes);
 app.use("/api/tenant/settings", tenantSettingsRoutes);
 app.use("/api/tenant/maintenance", tenantMaintenanceRoutes);
 app.use("/api/tenant/payments", tenantPaymentsRoutes);
+app.use("/api/tenant-chatbot", tenantChatbotRoutes);
 
-app.use("/api/public", publicRoutes);
-
-app.use((req, res, next) => {
-  if (!req.user) return next();
-
-  if (!req.user.organizationId) {
-    return res.status(403).json({
-      error: "No organization attached to user"
-    });
-  }
-
-  next();
-});
-
-
-
-
-
-
+console.log("Dashboard route mounted: /api/dashboard");
 console.log("Tenant contact route mounted: /api/tenant/contact");
+console.log("Tenant chatbot route mounted: /api/tenant-chatbot");
 
-/* Dashboard */
-
-/* API 404 fallback */
 app.use("/api", (req, res) => {
   return res.status(404).json({
     error: `API route not found: ${req.originalUrl}`,
   });
 });
 
-/* Global error handler */
 app.use((err, req, res, next) => {
   console.error("Server error:", err);
 

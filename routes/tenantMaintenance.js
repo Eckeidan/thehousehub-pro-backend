@@ -1,64 +1,10 @@
 const express = require("express");
-const multer = require("multer");
-const { CloudinaryStorage } = require("multer-storage-cloudinary");
-
 const prisma = require("../lib/prisma");
-const cloudinary = require("../utils/cloudinary");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const { createNotification } = require("../utils/createNotification");
 
 const router = express.Router();
 
-const aiRecommendationModel =
-  prisma.aIRecommendation || prisma.aiRecommendation;
-
-/* CLOUDINARY */
-const storage = new CloudinaryStorage({
-  cloudinary,
-  params: {
-    folder: "propertyos/maintenance",
-    resource_type: "image",
-    allowed_formats: ["jpg", "jpeg", "png", "webp"],
-  },
-});
-
-const upload = multer({
-  storage,
-  limits: { fileSize: 5 * 1024 * 1024, files: 5 },
-  fileFilter(req, file, cb) {
-    const allowed = ["image/jpeg", "image/png", "image/webp"];
-    if (!allowed.includes(file.mimetype)) {
-      return cb(new Error("Only JPG, PNG, and WEBP images are allowed"));
-    }
-    cb(null, true);
-  },
-});
-
-function uploadPhotos(req, res, next) {
-  upload.array("photos", 5)(req, res, (error) => {
-    if (!error) return next();
-
-    if (error instanceof multer.MulterError) {
-      if (error.code === "LIMIT_FILE_SIZE") {
-        return res.status(400).json({
-          error: "One or more photos are too large. Max 5MB each.",
-        });
-      }
-
-      if (error.code === "LIMIT_FILE_COUNT") {
-        return res.status(400).json({
-          error: "You can upload a maximum of 5 photos per request.",
-        });
-      }
-    }
-
-    return res.status(400).json({
-      error: error.message || "Photo upload failed.",
-    });
-  });
-}
-
-/* UTILS */
 function getOrganizationId(req) {
   return req.user?.organizationId || null;
 }
@@ -86,41 +32,116 @@ async function generateUniqueRequestNumber() {
 
   while (exists) {
     requestNumber = generateRequestNumber();
+
     const found = await prisma.maintenanceRequest.findUnique({
       where: { requestNumber },
     });
+
     exists = !!found;
   }
 
   return requestNumber;
 }
 
-function parseOptionalDate(value) {
-  if (!value || value === "") return null;
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date;
+function detectMaintenanceIntent(message) {
+  const text = String(message || "").toLowerCase();
+
+  const keywords = [
+    "water",
+    "eau",
+    "fuite",
+    "leak",
+    "toilet",
+    "wc",
+    "sink",
+    "plumbing",
+    "electric",
+    "electricity",
+    "power",
+    "light",
+    "chauffage",
+    "heat",
+    "ac",
+    "hvac",
+    "door",
+    "lock",
+    "broken",
+    "cassé",
+    "not working",
+    "ne marche pas",
+    "maintenance",
+    "repair",
+    "réparer",
+    "problem",
+    "problème",
+  ];
+
+  return keywords.some((word) => text.includes(word));
 }
 
-function isValidCategory(value) {
-  return [
-    "PLUMBING",
-    "ELECTRICAL",
-    "HVAC",
-    "LOCKS",
-    "PAINTING",
-    "PEST_CONTROL",
-    "APPLIANCE",
-    "GENERAL",
-    "OTHER",
-  ].includes(value);
+function detectCategory(message) {
+  const text = String(message || "").toLowerCase();
+
+  if (text.includes("water") || text.includes("eau") || text.includes("leak") || text.includes("fuite") || text.includes("toilet") || text.includes("wc")) {
+    return "PLUMBING";
+  }
+
+  if (text.includes("electric") || text.includes("power") || text.includes("light") || text.includes("courant")) {
+    return "ELECTRICAL";
+  }
+
+  if (text.includes("heat") || text.includes("chauffage") || text.includes("ac") || text.includes("hvac")) {
+    return "HVAC";
+  }
+
+  if (text.includes("door") || text.includes("lock") || text.includes("clé") || text.includes("serrure")) {
+    return "LOCKS";
+  }
+
+  return "GENERAL";
 }
 
-function isValidPriority(value) {
-  return ["LOW", "MEDIUM", "HIGH", "URGENT"].includes(value);
+function detectPriority(message) {
+  const text = String(message || "").toLowerCase();
+
+  if (
+    text.includes("urgent") ||
+    text.includes("emergency") ||
+    text.includes("flood") ||
+    text.includes("inondation") ||
+    text.includes("fire") ||
+    text.includes("smoke")
+  ) {
+    return "URGENT";
+  }
+
+  if (
+    text.includes("not working") ||
+    text.includes("ne marche pas") ||
+    text.includes("no water") ||
+    text.includes("pas d'eau") ||
+    text.includes("no power")
+  ) {
+    return "HIGH";
+  }
+
+  return "MEDIUM";
 }
 
-/* GET tenant maintenance */
-router.get("/", requireAuth, requireRole("TENANT"), async (req, res) => {
+function makeTitle(message) {
+  const text = String(message || "").trim();
+
+  if (!text) return "Maintenance request from tenant";
+
+  if (text.length <= 70) return text;
+
+  return `${text.slice(0, 70)}...`;
+}
+
+/**
+ * POST /api/tenant-chatbot/message
+ */
+router.post("/message", requireAuth, requireRole("TENANT"), async (req, res) => {
   try {
     const organizationId = requireOrg(req, res);
     if (!organizationId) return;
@@ -131,10 +152,20 @@ router.get("/", requireAuth, requireRole("TENANT"), async (req, res) => {
       return res.status(400).json({ error: "Tenant not linked to user" });
     }
 
+    const { message } = req.body || {};
+
+    if (!message || !String(message).trim()) {
+      return res.status(400).json({ error: "Message is required" });
+    }
+
     const tenant = await prisma.tenant.findFirst({
       where: {
         id: tenantId,
         organizationId,
+      },
+      include: {
+        property: true,
+        unit: true,
       },
     });
 
@@ -142,101 +173,15 @@ router.get("/", requireAuth, requireRole("TENANT"), async (req, res) => {
       return res.status(403).json({ error: "Unauthorized tenant" });
     }
 
-    const requests = await prisma.maintenanceRequest.findMany({
-      where: {
-        tenantId,
-        organizationId,
-      },
-      include: {
-        property: true,
-        unit: true,
-        tenant: true,
-        contractor: true,
-        aiRecommendations: {
-          where: { type: "CONTRACTOR_SUGGESTION" },
-          orderBy: { createdAt: "desc" },
-          take: 1,
-        },
-      },
-      orderBy: { createdAt: "desc" },
-    });
-
-    return res.json(requests);
-  } catch (error) {
-    console.error("GET /api/tenant/maintenance error:", error);
-    return res.status(500).json({
-      error: "Failed to load tenant maintenance requests",
-    });
-  }
-});
-
-/* POST tenant maintenance */
-router.post(
-  "/",
-  requireAuth,
-  requireRole("TENANT"),
-  uploadPhotos,
-  async (req, res) => {
-    try {
-      const organizationId = requireOrg(req, res);
-      if (!organizationId) return;
-
-      const tenantId = req.user?.tenantId;
-
-      if (!tenantId) {
-        return res.status(400).json({ error: "Tenant not linked to user" });
-      }
-
-      const tenant = await prisma.tenant.findFirst({
-        where: {
-          id: tenantId,
-          organizationId,
-        },
-        include: {
-          property: true,
-          unit: true,
-        },
+    if (!tenant.propertyId) {
+      return res.status(400).json({
+        error: "Tenant has no property linked",
       });
+    }
 
-      if (!tenant) {
-        return res.status(403).json({ error: "Unauthorized tenant" });
-      }
+    const isMaintenance = detectMaintenanceIntent(message);
 
-      if (!tenant.propertyId) {
-        return res.status(400).json({ error: "Tenant has no property linked" });
-      }
-
-      const {
-        title,
-        description,
-        category,
-        priority,
-        preferredDate,
-        entryPermission,
-        locationNote,
-      } = req.body;
-
-      if (!title || String(title).trim() === "") {
-        return res.status(400).json({ error: "Title is required" });
-      }
-
-      const safeCategory =
-        category && isValidCategory(category) ? category : "GENERAL";
-
-      const safePriority =
-        priority && isValidPriority(priority) ? priority : "MEDIUM";
-
-      const photos = Array.isArray(req.files)
-        ? req.files.map((file) => ({
-            url: file.path,
-            fileName: file.originalname,
-            mimeType: file.mimetype,
-            size: file.size,
-            provider: "cloudinary",
-            publicId: file.filename,
-          }))
-        : [];
-
+    if (isMaintenance) {
       const requestNumber = await generateUniqueRequestNumber();
 
       const createdRequest = await prisma.maintenanceRequest.create({
@@ -246,15 +191,15 @@ router.post(
           propertyId: tenant.propertyId,
           unitId: tenant.unitId || null,
           tenantId: tenant.id,
-          title: String(title).trim(),
-          description: description ? String(description).trim() : null,
-          category: safeCategory,
-          priority: safePriority,
+          title: makeTitle(message),
+          description: String(message).trim(),
+          category: detectCategory(message),
+          priority: detectPriority(message),
           status: "OPEN",
-          preferredDate: parseOptionalDate(preferredDate),
-          entryPermission: entryPermission === "true" || entryPermission === true,
-          locationNote: locationNote ? String(locationNote).trim() : null,
-          photos: photos.length ? photos : null,
+          entryPermission: false,
+          locationNote: tenant.unit?.unitCode
+            ? `Reported from tenant chatbot - Unit ${tenant.unit.unitCode}`
+            : "Reported from tenant chatbot",
         },
         include: {
           property: true,
@@ -268,43 +213,41 @@ router.post(
         await createNotification({
           tenantId: tenant.id,
           title: "Maintenance request created",
-          message: `Your maintenance request "${createdRequest.title}" has been submitted successfully.`,
+          message: `Your request "${createdRequest.title}" has been created from the chatbot.`,
           type: "INFO",
           category: "MAINTENANCE",
         });
       } catch (notificationError) {
-        console.error("Tenant maintenance notification error:", notificationError);
+        console.error("Chatbot notification error:", notificationError);
       }
 
-      const request = await prisma.maintenanceRequest.findFirst({
-        where: {
-          id: createdRequest.id,
-          organizationId,
-        },
-        include: {
-          property: true,
-          unit: true,
-          tenant: true,
-          contractor: true,
-          aiRecommendations: {
-            where: { type: "CONTRACTOR_SUGGESTION" },
-            orderBy: { createdAt: "desc" },
-            take: 1,
-          },
-        },
-      });
-
-      return res.status(201).json(request || createdRequest);
-    } catch (error) {
-      console.error("POST /api/tenant/maintenance error:", error);
-
-      return res.status(500).json({
-        error:
-          error?.message ||
-          "Failed to create maintenance request. Please try again.",
+      return res.status(201).json({
+        success: true,
+        action: "MAINTENANCE_CREATED",
+        reply:
+          "I have created a maintenance request for you. The property manager will review it soon.",
+        maintenanceRequest: createdRequest,
       });
     }
+
+    return res.json({
+      success: true,
+      action: "ANSWER",
+      reply: `Hello ${tenant.firstName || ""}, I can help you with your lease, payments, property information, or maintenance requests. If something is broken or not working, describe the problem and I will create a maintenance request for you.`,
+      tenant: {
+        id: tenant.id,
+        fullName: `${tenant.firstName || ""} ${tenant.lastName || ""}`.trim(),
+        property: tenant.property?.name || tenant.property?.code || null,
+        unit: tenant.unit?.unitCode || tenant.unit?.unitName || null,
+        organizationId,
+      },
+    });
+  } catch (error) {
+    console.error("POST /api/tenant-chatbot/message error:", error);
+    return res.status(500).json({
+      error: error?.message || "Failed to process chatbot message",
+    });
   }
-);
+});
 
 module.exports = router;
