@@ -3,9 +3,28 @@ const fs = require("fs");
 const path = require("path");
 const multer = require("multer");
 const prisma = require("../lib/prisma");
+const { requireAuth, requireRole } = require("../middleware/auth");
 const { createNotification } = require("../utils/createNotification");
 
 const router = express.Router();
+
+router.use(requireAuth);
+router.use(requireRole("ADMIN", "OWNER"));
+
+function getOrganizationId(req) {
+  return req.user?.organizationId || null;
+}
+
+function requireOrg(req, res) {
+  const organizationId = getOrganizationId(req);
+
+  if (!organizationId) {
+    res.status(403).json({ error: "Organization is required" });
+    return null;
+  }
+
+  return organizationId;
+}
 
 const uploadDir = path.join(__dirname, "..", "uploads", "documents");
 
@@ -14,14 +33,15 @@ if (!fs.existsSync(uploadDir)) {
 }
 
 const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
+  destination(req, file, cb) {
     cb(null, uploadDir);
   },
-  filename: function (req, file, cb) {
+  filename(req, file, cb) {
     const ext = path.extname(file.originalname);
     const baseName = path
       .basename(file.originalname, ext)
       .replace(/[^a-zA-Z0-9-_]/g, "_");
+
     const uniqueName = `${Date.now()}-${baseName}${ext}`;
     cb(null, uniqueName);
   },
@@ -42,23 +62,28 @@ const upload = multer({
   limits: {
     fileSize: 10 * 1024 * 1024,
   },
-  fileFilter: function (req, file, cb) {
+  fileFilter(req, file, cb) {
     if (allowedMimeTypes.includes(file.mimetype)) {
       cb(null, true);
-    } else {
-      cb(
-        new Error(
-          "Unsupported file type. Only PDF, JPG, PNG, WEBP, DOC, and DOCX are allowed."
-        )
-      );
+      return;
     }
+
+    cb(
+      new Error(
+        "Unsupported file type. Only PDF, JPG, PNG, WEBP, DOC, and DOCX are allowed."
+      )
+    );
   },
 });
 
-/* GET all documents */
+/* GET /api/documents */
 router.get("/", async (req, res) => {
   try {
+    const organizationId = requireOrg(req, res);
+    if (!organizationId) return;
+
     const documents = await prisma.document.findMany({
+      where: { organizationId },
       include: {
         property: true,
         tenant: true,
@@ -68,29 +93,24 @@ router.get("/", async (req, res) => {
       },
     });
 
-    res.json(documents);
+    return res.json(documents);
   } catch (error) {
     console.error("Error fetching documents:", error);
-    res.status(500).json({ error: "Failed to fetch documents" });
+    return res.status(500).json({ error: "Failed to fetch documents" });
   }
-
-  if (document.accessibleToTenant && document.tenantId) {
-  await createNotification({
-    tenantId: document.tenantId,
-    title: "New document available",
-    message: `${document.documentName} has been shared with your account.`,
-    type: "INFO",
-    category: "DOCUMENT",
-  });
-}
-
 });
 
-/* GET single document */
+/* GET /api/documents/:id */
 router.get("/:id", async (req, res) => {
   try {
-    const document = await prisma.document.findUnique({
-      where: { id: req.params.id },
+    const organizationId = requireOrg(req, res);
+    if (!organizationId) return;
+
+    const document = await prisma.document.findFirst({
+      where: {
+        id: req.params.id,
+        organizationId,
+      },
       include: {
         property: true,
         tenant: true,
@@ -101,16 +121,19 @@ router.get("/:id", async (req, res) => {
       return res.status(404).json({ error: "Document not found" });
     }
 
-    res.json(document);
+    return res.json(document);
   } catch (error) {
     console.error("Error fetching document:", error);
-    res.status(500).json({ error: "Failed to fetch document" });
+    return res.status(500).json({ error: "Failed to fetch document" });
   }
 });
 
-/* UPLOAD document */
+/* POST /api/documents */
 router.post("/", upload.single("file"), async (req, res) => {
   try {
+    const organizationId = requireOrg(req, res);
+    if (!organizationId) return;
+
     const {
       propertyId,
       tenantId,
@@ -129,16 +152,50 @@ router.post("/", upload.single("file"), async (req, res) => {
       return res.status(400).json({ error: "Document name is required" });
     }
 
+    let safePropertyId = null;
+    let safeTenantId = null;
+
+    if (propertyId) {
+      const property = await prisma.property.findFirst({
+        where: {
+          id: propertyId,
+          organizationId,
+        },
+      });
+
+      if (!property) {
+        return res.status(404).json({ error: "Property not found" });
+      }
+
+      safePropertyId = property.id;
+    }
+
+    if (tenantId) {
+      const tenant = await prisma.tenant.findFirst({
+        where: {
+          id: tenantId,
+          organizationId,
+        },
+      });
+
+      if (!tenant) {
+        return res.status(404).json({ error: "Tenant not found" });
+      }
+
+      safeTenantId = tenant.id;
+    }
+
     const savedDocument = await prisma.document.create({
       data: {
-        propertyId: propertyId || null,
-        tenantId: tenantId || null,
+        organizationId,
+        propertyId: safePropertyId,
+        tenantId: safeTenantId,
         documentName: documentName.trim(),
         type: type || "OTHER",
         fileUrl: `/uploads/documents/${req.file.filename}`,
         mimeType: req.file.mimetype || null,
         accessibleToTenant: String(accessibleToTenant) === "true",
-        uploadedBy: uploadedBy?.trim() || null,
+        uploadedBy: uploadedBy?.trim() || req.user?.fullName || req.user?.email || null,
         notes: notes?.trim() || null,
       },
       include: {
@@ -147,20 +204,40 @@ router.post("/", upload.single("file"), async (req, res) => {
       },
     });
 
-    res.status(201).json(savedDocument);
+    if (savedDocument.accessibleToTenant && savedDocument.tenantId) {
+      try {
+        await createNotification({
+          tenantId: savedDocument.tenantId,
+          title: "New document available",
+          message: `${savedDocument.documentName} has been shared with your account.`,
+          type: "INFO",
+          category: "DOCUMENT",
+        });
+      } catch (notificationError) {
+        console.error("Document notification error:", notificationError);
+      }
+    }
+
+    return res.status(201).json(savedDocument);
   } catch (error) {
     console.error("Error uploading document:", error);
-    res.status(500).json({
-            error: error.message || "Failed to upload document",
-            });
-            }
+    return res.status(500).json({
+      error: error.message || "Failed to upload document",
+    });
+  }
 });
 
-/* DELETE document */
+/* DELETE /api/documents/:id */
 router.delete("/:id", async (req, res) => {
   try {
-    const existingDocument = await prisma.document.findUnique({
-      where: { id: req.params.id },
+    const organizationId = requireOrg(req, res);
+    if (!organizationId) return;
+
+    const existingDocument = await prisma.document.findFirst({
+      where: {
+        id: req.params.id,
+        organizationId,
+      },
     });
 
     if (!existingDocument) {
@@ -168,22 +245,20 @@ router.delete("/:id", async (req, res) => {
     }
 
     const fileName = existingDocument.fileUrl?.split("/").pop();
-    const absoluteFilePath = fileName
-      ? path.join(uploadDir, fileName)
-      : null;
+    const absoluteFilePath = fileName ? path.join(uploadDir, fileName) : null;
 
     if (absoluteFilePath && fs.existsSync(absoluteFilePath)) {
       fs.unlinkSync(absoluteFilePath);
     }
 
     await prisma.document.delete({
-      where: { id: req.params.id },
+      where: { id: existingDocument.id },
     });
 
-    res.json({ message: "Document deleted successfully" });
+    return res.json({ message: "Document deleted successfully" });
   } catch (error) {
     console.error("Error deleting document:", error);
-    res.status(500).json({ error: "Failed to delete document" });
+    return res.status(500).json({ error: "Failed to delete document" });
   }
 });
 

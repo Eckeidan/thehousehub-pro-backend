@@ -8,38 +8,69 @@ const {
 
 const router = express.Router();
 
-/* GET settings — ADMIN, OWNER, TENANT can read */
-router.get("/", requireAuth, requireRole("ADMIN", "OWNER", "TENANT"), async (req, res) => {
-  try {
-    let settings = await prisma.appSetting.findFirst({
-      orderBy: { createdAt: "asc" },
-    });
+function getOrganizationId(req) {
+  return req.user?.organizationId || null;
+}
 
-    if (!settings) {
-      settings = await prisma.appSetting.create({ data: {} });
+/* GET settings — organization scoped */
+router.get(
+  "/",
+  requireAuth,
+  requireRole("ADMIN", "OWNER", "TENANT"),
+  async (req, res) => {
+    try {
+      const organizationId = getOrganizationId(req);
+
+      if (!organizationId) {
+        return res.status(403).json({ error: "Organization is required" });
+      }
+
+      let settings = await prisma.appSetting.findFirst({
+        where: { organizationId },
+      });
+
+      if (!settings) {
+        settings = await prisma.appSetting.create({
+          data: {
+            organizationId,
+          },
+        });
+      }
+
+      return res.json(settings);
+    } catch (error) {
+      console.error("Error fetching settings:", error);
+      return res.status(500).json({ error: "Failed to fetch settings" });
     }
-
-    res.json(settings);
-  } catch (error) {
-    console.error("Error fetching settings:", error);
-    res.status(500).json({ error: "Failed to fetch settings" });
   }
-});
+);
 
-/* UPDATE settings — only ADMIN / OWNER */
+/* UPDATE settings — only ADMIN / OWNER, organization scoped */
 router.put("/", requireAuth, requireAdminOrOwner, async (req, res) => {
   try {
+    const organizationId = getOrganizationId(req);
+
+    if (!organizationId) {
+      return res.status(403).json({ error: "Organization is required" });
+    }
+
     let settings = await prisma.appSetting.findFirst({
-      orderBy: { createdAt: "asc" },
+      where: { organizationId },
     });
 
     if (!settings) {
-      settings = await prisma.appSetting.create({ data: {} });
+      settings = await prisma.appSetting.create({
+        data: {
+          organizationId,
+        },
+      });
     }
 
     const updated = await prisma.appSetting.update({
       where: { id: settings.id },
       data: {
+        organizationId,
+
         companyName: req.body.companyName ?? settings.companyName,
         email: req.body.email ?? settings.email,
         currency: req.body.currency ?? settings.currency,
@@ -55,10 +86,12 @@ router.put("/", requireAuth, requireAdminOrOwner, async (req, res) => {
           req.body.bankAccountNumber ?? settings.bankAccountNumber,
         paymentInstructions:
           req.body.paymentInstructions ?? settings.paymentInstructions,
+
         rentDueDay:
           req.body.rentDueDay !== undefined
             ? Number(req.body.rentDueDay)
             : settings.rentDueDay,
+
         lateFeeAmount:
           req.body.lateFeeAmount !== undefined
             ? Number(req.body.lateFeeAmount)
@@ -73,10 +106,10 @@ router.put("/", requireAuth, requireAdminOrOwner, async (req, res) => {
       },
     });
 
-    res.json(updated);
+    return res.json(updated);
   } catch (error) {
     console.error("Error updating settings:", error);
-    res.status(500).json({ error: "Failed to update settings" });
+    return res.status(500).json({ error: "Failed to update settings" });
   }
 });
 
