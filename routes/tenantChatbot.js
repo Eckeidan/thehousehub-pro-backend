@@ -1,20 +1,256 @@
 const express = require("express");
 const prisma = require("../lib/prisma");
 const { requireAuth, requireRole } = require("../middleware/auth");
+const { createNotification } = require("../utils/createNotification");
 
 const router = express.Router();
+
+const sessions = new Map();
 
 function getOrganizationId(req) {
   return req.user?.organizationId || null;
 }
 
-function formatDate(value) {
-  if (!value) return "not set";
-  return new Date(value).toLocaleDateString("en-US", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
+function normalize(text) {
+  return String(text || "").trim().toLowerCase();
+}
+
+function isYes(text) {
+  const value = normalize(text);
+  return ["yes", "y", "oui", "ok", "okay", "create", "go", "yes create"].some(
+    (word) => value.includes(word)
+  );
+}
+
+function isNo(text) {
+  const value = normalize(text);
+  return ["no", "non", "cancel", "stop", "not now"].some((word) =>
+    value.includes(word)
+  );
+}
+
+function detectMaintenanceIssue(message) {
+  const text = normalize(message);
+
+  const keywords = [
+    "water",
+    "leak",
+    "fuite",
+    "plumbing",
+    "toilet",
+    "sink",
+    "bathroom",
+    "kitchen",
+    "electric",
+    "power",
+    "door",
+    "lock",
+    "broken",
+    "damage",
+    "not working",
+    "heating",
+    "ac",
+    "hvac",
+  ];
+
+  return keywords.some((word) => text.includes(word));
+}
+
+function detectCategory(message) {
+  const text = normalize(message);
+
+  if (
+    text.includes("water") ||
+    text.includes("leak") ||
+    text.includes("fuite") ||
+    text.includes("sink") ||
+    text.includes("toilet") ||
+    text.includes("bathroom") ||
+    text.includes("kitchen")
+  ) {
+    return "PLUMBING";
+  }
+
+  if (text.includes("electric") || text.includes("power") || text.includes("light")) {
+    return "ELECTRICAL";
+  }
+
+  if (text.includes("lock") || text.includes("door") || text.includes("key")) {
+    return "LOCKS";
+  }
+
+  if (text.includes("heating") || text.includes("ac") || text.includes("hvac")) {
+    return "HVAC";
+  }
+
+  return "GENERAL";
+}
+
+function detectPriority(message) {
+  const text = normalize(message);
+
+  if (
+    text.includes("urgent") ||
+    text.includes("emergency") ||
+    text.includes("everywhere") ||
+    text.includes("flood") ||
+    text.includes("danger") ||
+    text.includes("spreading")
+  ) {
+    return "HIGH";
+  }
+
+  return "MEDIUM";
+}
+
+async function generateUniqueRequestNumber() {
+  const year = new Date().getFullYear();
+
+  while (true) {
+    const random = Math.floor(1000 + Math.random() * 9000);
+    const requestNumber = `MR-${year}-${random}`;
+
+    const existing = await prisma.maintenanceRequest.findUnique({
+      where: { requestNumber },
+    });
+
+    if (!existing) return requestNumber;
+  }
+}
+
+async function getTenantContext(req) {
+  const organizationId = getOrganizationId(req);
+  const tenantId = req.user?.tenantId;
+
+  if (!organizationId) {
+    return { error: "Organization is required" };
+  }
+
+  if (!tenantId) {
+    return { error: "Tenant account is not linked to a tenant profile" };
+  }
+
+  const tenant = await prisma.tenant.findFirst({
+    where: {
+      id: tenantId,
+      organizationId,
+    },
+    include: {
+      property: true,
+      unit: true,
+      leases: {
+        orderBy: { createdAt: "desc" },
+        take: 1,
+      },
+    },
   });
+
+  if (!tenant) {
+    return { error: "Unauthorized tenant" };
+  }
+
+  const settings = await prisma.appSetting.findFirst({
+    where: { organizationId },
+  });
+
+  const payments = await prisma.payment.findMany({
+    where: {
+      organizationId,
+      lease: {
+        tenantId,
+      },
+    },
+    orderBy: { paymentDate: "desc" },
+    take: 10,
+    include: {
+      lease: true,
+    },
+  });
+
+  return {
+    organizationId,
+    tenantId,
+    tenant,
+    settings,
+    payments,
+  };
+}
+
+function answerTenantQuestion(message, context) {
+  const text = normalize(message);
+  const { tenant, settings, payments } = context;
+
+  const fullName = `${tenant.firstName || ""} ${tenant.lastName || ""}`.trim();
+  const lease = tenant.leases?.[0] || null;
+  const monthlyRent = lease?.rentAmount || tenant.unit?.monthlyRent || 0;
+
+  if (text.includes("rent") || text.includes("monthly")) {
+    return `Your monthly rent is ${formatMoney(monthlyRent)}.`;
+  }
+
+  if (text.includes("unit") || text.includes("apartment")) {
+    return `Your unit is ${tenant.unit?.unitCode || "not assigned yet"}${
+      tenant.unit?.unitName ? ` — ${tenant.unit.unitName}` : ""
+    }.`;
+  }
+
+  if (text.includes("property") || text.includes("house") || text.includes("home")) {
+    return `Your property is ${
+      tenant.property?.name || tenant.property?.code || "not assigned yet"
+    }.`;
+  }
+
+  if (text.includes("address")) {
+    return `Your property address is ${
+      tenant.property?.addressLine1 || "not configured yet"
+    }${tenant.property?.city ? `, ${tenant.property.city}` : ""}.`;
+  }
+
+  if (text.includes("name") || text.includes("full name")) {
+    return `Your full name is ${fullName || "not available"}.`;
+  }
+
+  if (text.includes("email") || text.includes("mail")) {
+    return `Your email is ${tenant.email || "not available"}.`;
+  }
+
+  if (
+    text.includes("landlord") ||
+    text.includes("admin") ||
+    text.includes("manager") ||
+    text.includes("support")
+  ) {
+    return `You can contact management at ${
+      settings?.supportEmail || settings?.email || "the support email is not configured yet"
+    }.`;
+  }
+
+  if (text.includes("lease") && (text.includes("end") || text.includes("expire"))) {
+    return `Your lease end date is ${
+      lease?.endDate || tenant.leaseEndDate
+        ? new Date(lease?.endDate || tenant.leaseEndDate).toLocaleDateString()
+        : "not configured yet"
+    }.`;
+  }
+
+  if (text.includes("lease") && (text.includes("start") || text.includes("begin"))) {
+    return `Your lease start date is ${
+      lease?.startDate || tenant.leaseStartDate
+        ? new Date(lease?.startDate || tenant.leaseStartDate).toLocaleDateString()
+        : "not configured yet"
+    }.`;
+  }
+
+  if (text.includes("lease") || text.includes("contract")) {
+    return `Your lease status is ${tenant.leaseStatus || lease?.status || "not configured yet"}.`;
+  }
+
+  if (text.includes("payment") || text.includes("paid") || text.includes("balance")) {
+    const totalPaid = payments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
+    return `Your recent recorded payment total is ${formatMoney(totalPaid)}. Your monthly rent is ${formatMoney(monthlyRent)}.`;
+  }
+
+  return null;
 }
 
 function formatMoney(value) {
@@ -22,397 +258,192 @@ function formatMoney(value) {
   return new Intl.NumberFormat("en-US", {
     style: "currency",
     currency: "USD",
-    maximumFractionDigits: 2,
+    maximumFractionDigits: 0,
   }).format(amount);
-}
-
-function detectMaintenanceCategory(message) {
-  const msg = message.toLowerCase();
-
-  if (msg.includes("water") || msg.includes("sink") || msg.includes("toilet") || msg.includes("bathroom") || msg.includes("plumbing")) {
-    return "PLUMBING";
-  }
-
-  if (msg.includes("electric") || msg.includes("light") || msg.includes("power") || msg.includes("socket")) {
-    return "ELECTRICAL";
-  }
-
-  if (msg.includes("heat") || msg.includes("ac") || msg.includes("air") || msg.includes("hvac")) {
-    return "HVAC";
-  }
-
-  if (msg.includes("lock") || msg.includes("key") || msg.includes("door")) {
-    return "LOCKS";
-  }
-
-  if (msg.includes("paint") || msg.includes("wall")) {
-    return "PAINTING";
-  }
-
-  if (msg.includes("pest") || msg.includes("rat") || msg.includes("mouse") || msg.includes("cockroach")) {
-    return "PEST_CONTROL";
-  }
-
-  if (msg.includes("fridge") || msg.includes("oven") || msg.includes("stove") || msg.includes("washer")) {
-    return "APPLIANCE";
-  }
-
-  return "GENERAL";
-}
-
-function isMaintenanceIssue(message) {
-  const msg = message.toLowerCase();
-
-  return (
-    msg.includes("not working") ||
-    msg.includes("broken") ||
-    msg.includes("leak") ||
-    msg.includes("leaking") ||
-    msg.includes("problem") ||
-    msg.includes("issue") ||
-    msg.includes("repair") ||
-    msg.includes("fix") ||
-    msg.includes("damage") ||
-    msg.includes("water") ||
-    msg.includes("electric") ||
-    msg.includes("toilet") ||
-    msg.includes("bathroom") ||
-    msg.includes("door") ||
-    msg.includes("lock")
-  );
-}
-
-function generateRequestNumber() {
-  const year = new Date().getFullYear();
-  const random = Math.floor(1000 + Math.random() * 9000);
-  return `MR-${year}-${random}`;
-}
-
-async function generateUniqueRequestNumber() {
-  let requestNumber = generateRequestNumber();
-  let exists = true;
-
-  while (exists) {
-    const found = await prisma.maintenanceRequest.findUnique({
-      where: { requestNumber },
-    });
-
-    if (!found) exists = false;
-    else requestNumber = generateRequestNumber();
-  }
-
-  return requestNumber;
 }
 
 router.post("/message", requireAuth, requireRole("TENANT"), async (req, res) => {
   try {
-    const organizationId = getOrganizationId(req);
-    const tenantId = req.user?.tenantId;
     const message = String(req.body?.message || "").trim();
-
-    if (!organizationId) {
-      return res.status(403).json({ error: "Organization is required" });
-    }
-
-    if (!tenantId) {
-      return res.status(400).json({ error: "Tenant account is not linked" });
-    }
 
     if (!message) {
       return res.status(400).json({ error: "Message is required" });
     }
 
-    const tenant = await prisma.tenant.findFirst({
-      where: {
-        id: tenantId,
-        organizationId,
-      },
-      include: {
-        property: true,
-        unit: true,
-        leases: {
-          orderBy: { createdAt: "desc" },
-          take: 1,
-        },
-      },
-    });
+    const context = await getTenantContext(req);
 
-    if (!tenant) {
-      return res.status(403).json({ error: "Unauthorized tenant" });
+    if (context.error) {
+      return res.status(403).json({ error: context.error });
     }
 
-    const settings = await prisma.appSetting.findFirst({
-      where: { organizationId },
-    });
+    const { organizationId, tenantId, tenant } = context;
+    const sessionKey = `${organizationId}:${tenantId}`;
+    const currentSession = sessions.get(sessionKey);
 
-    const adminUser = await prisma.user.findFirst({
-      where: {
-        organizationId,
-        role: "ADMIN",
-        isActive: true,
-      },
-      orderBy: { createdAt: "asc" },
-    });
+    if (currentSession?.mode === "MAINTENANCE") {
+      if (currentSession.step === "ASK_ACTIVE") {
+        currentSession.activeIssue = message;
+        currentSession.step = "ASK_LOCATION";
+        sessions.set(sessionKey, currentSession);
 
-    const msg = message.toLowerCase();
-
-    const tenantFullName = `${tenant.firstName || ""} ${tenant.lastName || ""}`.trim();
-    const unitCode = tenant.unit?.unitCode || "not assigned";
-    const unitName = tenant.unit?.unitName || "";
-    const propertyName = tenant.property?.name || tenant.property?.code || "not assigned";
-    const propertyAddress = tenant.property?.addressLine1 || "not set";
-    const propertyCity = tenant.property?.city || "";
-
-    const currentLease = tenant.leases?.[0] || null;
-    const leaseStart = tenant.leaseStartDate || currentLease?.startDate || null;
-    const leaseEnd = tenant.leaseEndDate || currentLease?.endDate || null;
-    const leaseStatus = tenant.leaseStatus || currentLease?.status || "not set";
-
-    const monthlyRent =
-      currentLease?.rentAmount ||
-      tenant.unit?.monthlyRent ||
-      0;
-
-    if (msg === "hello" || msg === "hi" || msg.includes("good morning") || msg.includes("good evening")) {
-      return res.json({
-        success: true,
-        action: "ANSWER",
-        reply:
-          `Hello ${tenant.firstName || ""} 👋 I can help you with your rent, lease, unit, property, payments, documents, landlord contact, or maintenance issues.`,
-      });
-    }
-
-    if (
-      msg.includes("my rent") ||
-      msg.includes("monthly rent") ||
-      msg.includes("rent amount") ||
-      msg.includes("how much is my rent") ||
-      msg.includes("amount to pay")
-    ) {
-      return res.json({
-        success: true,
-        action: "ANSWER",
-        reply: `Your monthly rent is ${formatMoney(monthlyRent)}.`,
-      });
-    }
-
-    if (
-      msg.includes("my unit") ||
-      msg.includes("unit number") ||
-      msg.includes("what is my unit") ||
-      msg.includes("apartment")
-    ) {
-      return res.json({
-        success: true,
-        action: "ANSWER",
-        reply: `Your unit is ${unitCode}${unitName ? ` — ${unitName}` : ""}.`,
-      });
-    }
-
-    if (
-      msg.includes("my full name") ||
-      msg.includes("my name") ||
-      msg.includes("who am i")
-    ) {
-      return res.json({
-        success: true,
-        action: "ANSWER",
-        reply: `Your full name is ${tenantFullName}.`,
-      });
-    }
-
-    if (
-      msg.includes("lease end") ||
-      msg.includes("end lease") ||
-      msg.includes("lease ending") ||
-      msg.includes("my end date") ||
-      msg.includes("end date")
-    ) {
-      return res.json({
-        success: true,
-        action: "ANSWER",
-        reply: `Your lease end date is ${formatDate(leaseEnd)}.`,
-      });
-    }
-
-    if (
-      msg.includes("lease start") ||
-      msg.includes("start date") ||
-      msg.includes("lease begin")
-    ) {
-      return res.json({
-        success: true,
-        action: "ANSWER",
-        reply: `Your lease start date is ${formatDate(leaseStart)}.`,
-      });
-    }
-
-    if (
-      msg.includes("lease status") ||
-      msg.includes("my lease") ||
-      msg.includes("contract status")
-    ) {
-      return res.json({
-        success: true,
-        action: "ANSWER",
-        reply: `Your lease status is ${leaseStatus}. Start date: ${formatDate(leaseStart)}. End date: ${formatDate(leaseEnd)}.`,
-      });
-    }
-
-    if (
-      msg.includes("my property") ||
-      msg.includes("property name") ||
-      msg.includes("where do i live") ||
-      msg.includes("my address")
-    ) {
-      return res.json({
-        success: true,
-        action: "ANSWER",
-        reply: `Your property is ${propertyName}. Address: ${propertyAddress}${propertyCity ? `, ${propertyCity}` : ""}.`,
-      });
-    }
-
-    if (
-      msg.includes("landlord email") ||
-      msg.includes("landload") ||
-      msg.includes("admin mail") ||
-      msg.includes("admin email") ||
-      msg.includes("manager email") ||
-      msg.includes("support email") ||
-      msg.includes("management email")
-    ) {
-      const contactEmail =
-        settings?.supportEmail ||
-        settings?.email ||
-        adminUser?.email ||
-        "not configured";
-
-      return res.json({
-        success: true,
-        action: "ANSWER",
-        reply: `The management contact email is ${contactEmail}.`,
-      });
-    }
-
-    if (
-      msg.includes("phone") ||
-      msg.includes("contact number") ||
-      msg.includes("manager contact")
-    ) {
-      return res.json({
-        success: true,
-        action: "ANSWER",
-        reply:
-          "The management phone number is not configured yet. Please use the Contact Landlord page or email management.",
-      });
-    }
-
-    if (
-      msg.includes("payment") ||
-      msg.includes("paid") ||
-      msg.includes("balance")
-    ) {
-      const payments = await prisma.payment.findMany({
-        where: {
-          organizationId,
-          lease: {
-            tenantId: tenant.id,
-          },
-        },
-        orderBy: { paymentDate: "desc" },
-        take: 5,
-      });
-
-      const totalPaid = payments
-        .filter((p) => String(p.status).toUpperCase() === "PAID")
-        .reduce((sum, p) => sum + Number(p.amount || 0), 0);
-
-      return res.json({
-        success: true,
-        action: "ANSWER",
-        reply: `Your latest payment records show ${payments.length} recent transaction(s). Total paid from these recent records: ${formatMoney(totalPaid)}.`,
-      });
-    }
-
-    if (
-      msg.includes("document") ||
-      msg.includes("documents") ||
-      msg.includes("lease file") ||
-      msg.includes("files")
-    ) {
-      const documents = await prisma.document.findMany({
-        where: {
-          organizationId,
-          accessibleToTenant: true,
-          OR: [
-            { tenantId: tenant.id },
-            { propertyId: tenant.propertyId },
-          ],
-        },
-        orderBy: { createdAt: "desc" },
-        take: 5,
-      });
-
-      return res.json({
-        success: true,
-        action: "ANSWER",
-        reply: documents.length
-          ? `You currently have ${documents.length} accessible document(s). Please open the Documents page to view or download them.`
-          : "No tenant documents are available for you right now.",
-      });
-    }
-
-    if (isMaintenanceIssue(message)) {
-      if (!tenant.propertyId) {
-        return res.status(400).json({
-          success: false,
-          error: "Your tenant profile has no property linked.",
+        return res.json({
+          success: true,
+          action: "ASK_LOCATION",
+          reply:
+            "Where exactly is the problem located? For example: kitchen sink, bathroom, ceiling, floor, pipe, or appliance.",
         });
       }
 
-      const category = detectMaintenanceCategory(message);
-      const requestNumber = await generateUniqueRequestNumber();
+      if (currentSession.step === "ASK_LOCATION") {
+        currentSession.location = message;
+        currentSession.step = "ASK_URGENCY";
+        sessions.set(sessionKey, currentSession);
 
-      const createdRequest = await prisma.maintenanceRequest.create({
-        data: {
-          organizationId,
-          requestNumber,
-          propertyId: tenant.propertyId,
-          unitId: tenant.unitId || null,
-          tenantId: tenant.id,
-          title: `Tenant Issue - ${category}`,
-          description: message,
-          category,
-          priority: category === "PLUMBING" || category === "ELECTRICAL" ? "HIGH" : "MEDIUM",
-          status: "OPEN",
-          entryPermission: false,
-        },
-        include: {
-          property: true,
-          unit: true,
-          tenant: true,
-        },
+        return res.json({
+          success: true,
+          action: "ASK_URGENCY",
+          reply:
+            "Is this urgent? Is it causing damage, spreading, or stopping you from using part of the house?",
+        });
+      }
+
+      if (currentSession.step === "ASK_URGENCY") {
+        currentSession.urgency = message;
+        currentSession.priority = detectPriority(
+          `${currentSession.originalMessage} ${message}`
+        );
+        currentSession.step = "CONFIRM_CREATE";
+        sessions.set(sessionKey, currentSession);
+
+        return res.json({
+          success: true,
+          action: "CONFIRM_CREATE",
+          reply: `Thank you. I can create a ${currentSession.priority} priority ${currentSession.category} maintenance request for "${currentSession.originalMessage}" at "${currentSession.location}". Do you want me to create it now?`,
+        });
+      }
+
+      if (currentSession.step === "CONFIRM_CREATE") {
+        if (isNo(message)) {
+          sessions.delete(sessionKey);
+
+          return res.json({
+            success: true,
+            action: "CANCELLED",
+            reply:
+              "Okay, I did not create the maintenance request. You can message me again when you want to submit it.",
+          });
+        }
+
+        if (!isYes(message)) {
+          return res.json({
+            success: true,
+            action: "WAITING_CONFIRMATION",
+            reply:
+              "Please confirm if you want me to create the maintenance request. Reply with Yes to create it, or No to cancel.",
+          });
+        }
+
+        if (!tenant.propertyId) {
+          sessions.delete(sessionKey);
+
+          return res.status(400).json({
+            error: "Tenant has no property linked",
+          });
+        }
+
+        const requestNumber = await generateUniqueRequestNumber();
+
+        const title = `Tenant Issue - ${currentSession.category}`;
+        const description = [
+          `Initial message: ${currentSession.originalMessage}`,
+          `Current status: ${currentSession.activeIssue}`,
+          `Location: ${currentSession.location}`,
+          `Urgency details: ${currentSession.urgency}`,
+        ].join("\n");
+
+        const maintenanceRequest = await prisma.maintenanceRequest.create({
+          data: {
+            organizationId,
+            requestNumber,
+            propertyId: tenant.propertyId,
+            unitId: tenant.unitId || null,
+            tenantId: tenant.id,
+            title,
+            description,
+            category: currentSession.category,
+            priority: currentSession.priority,
+            status: "OPEN",
+            locationNote: currentSession.location,
+            entryPermission: false,
+          },
+          include: {
+            property: true,
+            unit: true,
+            tenant: true,
+          },
+        });
+
+        try {
+          await createNotification({
+            tenantId: tenant.id,
+            title: "Maintenance request created",
+            message: `Your request ${requestNumber} has been submitted successfully.`,
+            type: "INFO",
+            category: "MAINTENANCE",
+          });
+        } catch (notificationError) {
+          console.error("Chatbot notification error:", notificationError);
+        }
+
+        sessions.delete(sessionKey);
+
+        return res.status(201).json({
+          success: true,
+          action: "MAINTENANCE_CREATED",
+          reply: `I have created a maintenance request for you. Your request number is ${requestNumber}. Our team will review it shortly.`,
+          maintenanceRequest,
+        });
+      }
+    }
+
+    const directAnswer = answerTenantQuestion(message, context);
+
+    if (directAnswer) {
+      return res.json({
+        success: true,
+        action: "ANSWER",
+        reply: directAnswer,
+      });
+    }
+
+    if (detectMaintenanceIssue(message)) {
+      const category = detectCategory(message);
+
+      sessions.set(sessionKey, {
+        mode: "MAINTENANCE",
+        step: "ASK_ACTIVE",
+        originalMessage: message,
+        category,
+        priority: detectPriority(message),
       });
 
-      return res.status(201).json({
+      return res.json({
         success: true,
-        action: "MAINTENANCE_CREATED",
+        action: "ASK_ACTIVE",
         reply:
-          `I have created a maintenance request for you. Your request number is ${createdRequest.requestNumber}. Our team will review it shortly.`,
-        maintenanceRequest: createdRequest,
+          "I understand this may be a maintenance issue. Is the problem still happening right now? Please describe what is happening currently.",
       });
     }
 
     return res.json({
       success: true,
-      action: "ANSWER",
-      reply:
-        "I can help you with your rent, unit, lease dates, property information, documents, payments, landlord contact, or maintenance issues. Please ask your question in a simple way.",
+      action: "GENERAL",
+      reply: `Hello ${tenant.firstName || ""} 👋 I can help you with your rent, lease, unit, property, payments, documents, landlord contact, or maintenance issues.`,
     });
   } catch (error) {
-    console.error("Tenant chatbot error:", error);
+    console.error("POST /api/tenant-chatbot/message error:", error);
     return res.status(500).json({
-      error: error.message || "Tenant chatbot failed to respond",
+      error: error.message || "Tenant assistant failed to respond",
     });
   }
 });
