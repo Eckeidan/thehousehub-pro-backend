@@ -30,9 +30,6 @@ router.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body || {};
 
-    console.log("EMAIL INPUT:", email);
-    console.log("PASSWORD INPUT:", password);
-
     if (!email || !password) {
       return res.status(400).json({
         error: "Email and password are required",
@@ -41,7 +38,7 @@ router.post("/login", async (req, res) => {
 
     const user = await prisma.user.findUnique({
       where: {
-        email: email.toLowerCase().trim(),
+        email: String(email).toLowerCase().trim(),
       },
       include: {
         tenant: {
@@ -53,10 +50,6 @@ router.post("/login", async (req, res) => {
         },
       },
     });
-
-    console.log("USER FOUND:", user ? user.email : null);
-    console.log("ROLE:", user ? user.role : null);
-    console.log("HASH IN DB:", user ? user.passwordHash : null);
 
     if (!user) {
       return res.status(401).json({
@@ -71,8 +64,6 @@ router.post("/login", async (req, res) => {
     }
 
     const isPasswordValid = await bcrypt.compare(password, user.passwordHash);
-
-    console.log("PASSWORD VALID:", isPasswordValid);
 
     if (!isPasswordValid) {
       return res.status(401).json({
@@ -101,8 +92,10 @@ router.post("/login", async (req, res) => {
         fullName: user.fullName,
         email: user.email,
         role: user.role,
+        isActive: user.isActive,
         tenantId: user.tenantId || null,
         organizationId: user.organizationId || null,
+        mustChangePassword: user.mustChangePassword === true,
       },
       redirectTo: buildRedirectPath(user.role),
     });
@@ -151,8 +144,9 @@ router.get("/me", requireAuth, async (req, res) => {
         email: user.email,
         role: user.role,
         isActive: user.isActive,
-        tenantId: user.tenantId,
+        tenantId: user.tenantId || null,
         organizationId: user.organizationId || null,
+        mustChangePassword: user.mustChangePassword === true,
         tenant: user.tenant || null,
       },
     });
@@ -219,12 +213,14 @@ router.put("/change-password", requireAuth, async (req, res) => {
       where: { id: user.id },
       data: {
         passwordHash: newPasswordHash,
+        mustChangePassword: false,
       },
     });
 
     return res.json({
       success: true,
       message: "Password changed successfully",
+      mustChangePassword: false,
     });
   } catch (error) {
     console.error("Change password error:", error);

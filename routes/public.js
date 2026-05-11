@@ -5,7 +5,7 @@ const prisma = require("../lib/prisma");
 
 const router = express.Router();
 
-function generatePassword(length = 10) {
+function generatePassword(length = 12) {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789@$!";
   let password = "";
 
@@ -32,9 +32,6 @@ async function sendLandlordWelcomeEmail({
   to,
   fullName,
   companyName,
-  phone,
-  address,
-  nationality,
   password,
 }) {
   const appUrl = process.env.FRONTEND_URL || "https://thehousehub.app/login";
@@ -61,10 +58,6 @@ async function sendLandlordWelcomeEmail({
               <p><strong>Email:</strong> ${to}</p>
               <p><strong>Temporary Password:</strong> ${password}</p>
               <p><strong>Role:</strong> Admin</p>
-              <hr style="border:none;border-top:1px solid #e5e7eb;margin:14px 0;" />
-              <p><strong>Phone:</strong> ${phone || "N/A"}</p>
-              <p><strong>Address:</strong> ${address || "N/A"}</p>
-              <p><strong>Nationality:</strong> ${nationality || "N/A"}</p>
             </div>
 
             <div style="text-align:center;margin-top:26px;">
@@ -78,39 +71,27 @@ async function sendLandlordWelcomeEmail({
               For security, please change your password after your first login.
             </p>
           </div>
-
-          <div style="background:#f1f5f9;padding:16px;text-align:center;color:#64748b;font-size:12px;">
-            © ${new Date().getFullYear()} The House Hub
-          </div>
         </div>
       </div>
     `,
   });
 }
 
-/**
- * POST /api/public/register-landlord
- */
 router.post("/register-landlord", async (req, res) => {
   try {
-    const {
-      name,
-      email,
-      companyName,
-      phone,
-      address,
-      nationality,
-    } = req.body || {};
+    const { name, email, phone, companyName } = req.body || {};
 
-    if (!name || !email || !companyName) {
+    if (!name || !email) {
       return res.status(400).json({
-        error: "Full name, email and company name are required",
+        error: "Full name and email are required",
       });
     }
 
-    const cleanEmail = String(email).toLowerCase().trim();
     const cleanName = String(name).trim();
-    const cleanCompanyName = String(companyName).trim();
+    const cleanEmail = String(email).toLowerCase().trim();
+    const cleanCompanyName = companyName
+    ? String(companyName).trim()
+    : `${cleanName}'s Properties`;
 
     const existingUser = await prisma.user.findUnique({
       where: { email: cleanEmail },
@@ -122,7 +103,7 @@ router.post("/register-landlord", async (req, res) => {
       });
     }
 
-    const temporaryPassword = generatePassword(12);
+    const temporaryPassword = generatePassword();
     const passwordHash = await bcrypt.hash(temporaryPassword, 10);
 
     const result = await prisma.$transaction(async (tx) => {
@@ -132,8 +113,6 @@ router.post("/register-landlord", async (req, res) => {
           companyName: cleanCompanyName,
           email: cleanEmail,
           phone: phone ? String(phone).trim() : null,
-          address: address ? String(address).trim() : null,
-          nationality: nationality ? String(nationality).trim() : null,
         },
       });
 
@@ -144,6 +123,7 @@ router.post("/register-landlord", async (req, res) => {
           passwordHash,
           role: "ADMIN",
           isActive: true,
+          mustChangePassword: true,
           organizationId: organization.id,
         },
       });
@@ -151,14 +131,13 @@ router.post("/register-landlord", async (req, res) => {
       return { organization, user };
     });
 
-    await sendLandlordWelcomeEmail({
+    sendLandlordWelcomeEmail({
       to: cleanEmail,
       fullName: cleanName,
       companyName: cleanCompanyName,
-      phone,
-      address,
-      nationality,
       password: temporaryPassword,
+    }).catch((emailError) => {
+      console.error("Welcome email failed:", emailError.message);
     });
 
     return res.status(201).json({

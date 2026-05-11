@@ -5,409 +5,250 @@ const { createNotification } = require("../utils/createNotification");
 
 const router = express.Router();
 
-const sessions = new Map();
+const chatSessions = new Map();
 
 function getOrganizationId(req) {
   return req.user?.organizationId || null;
 }
 
-function normalize(text) {
-  return String(text || "").trim().toLowerCase();
+function requireOrg(req, res) {
+  const organizationId = getOrganizationId(req);
+  if (!organizationId) {
+    res.status(403).json({ error: "Organization is required" });
+    return null;
+  }
+  return organizationId;
 }
 
-function isYes(text) {
-  const value = normalize(text);
-  return ["yes", "y", "oui", "ok", "okay", "create", "go", "yes create"].some(
-    (word) => value.includes(word)
-  );
+function generateRequestNumber() {
+  return `MR-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
 }
 
-function isNo(text) {
-  const value = normalize(text);
-  return ["no", "non", "cancel", "stop", "not now"].some((word) =>
-    value.includes(word)
-  );
+async function generateUniqueRequestNumber() {
+  let requestNumber;
+  let exists = true;
+
+  while (exists) {
+    requestNumber = generateRequestNumber();
+    const found = await prisma.maintenanceRequest.findUnique({
+      where: { requestNumber },
+    });
+    exists = !!found;
+  }
+
+  return requestNumber;
 }
 
-function detectMaintenanceIssue(message) {
-  const text = normalize(message);
+function text(value) {
+  return String(value || "").toLowerCase();
+}
 
-  const keywords = [
-    "water",
-    "leak",
-    "fuite",
-    "plumbing",
-    "toilet",
-    "sink",
-    "bathroom",
-    "kitchen",
-    "electric",
-    "power",
-    "door",
-    "lock",
-    "broken",
-    "damage",
-    "not working",
-    "heating",
-    "ac",
-    "hvac",
-  ];
+function detectMaintenanceIntent(message) {
+  const t = text(message);
 
-  return keywords.some((word) => text.includes(word));
+  return [
+    "water", "eau", "leak", "fuite", "toilet", "wc", "sink", "plumbing",
+    "electric", "power", "light", "courant", "chauffage", "heat", "ac",
+    "door", "lock", "broken", "cassé", "not working", "ne marche pas",
+    "maintenance", "repair", "réparer", "problem", "problème", "kitchen",
+    "bathroom", "ceiling", "roof"
+  ].some((word) => t.includes(word));
 }
 
 function detectCategory(message) {
-  const text = normalize(message);
+  const t = text(message);
 
-  if (
-    text.includes("water") ||
-    text.includes("leak") ||
-    text.includes("fuite") ||
-    text.includes("sink") ||
-    text.includes("toilet") ||
-    text.includes("bathroom") ||
-    text.includes("kitchen")
-  ) {
+  if (["water", "eau", "leak", "fuite", "toilet", "wc", "sink", "kitchen", "bathroom"].some((w) => t.includes(w))) {
     return "PLUMBING";
   }
 
-  if (text.includes("electric") || text.includes("power") || text.includes("light")) {
+  if (["electric", "power", "light", "courant"].some((w) => t.includes(w))) {
     return "ELECTRICAL";
   }
 
-  if (text.includes("lock") || text.includes("door") || text.includes("key")) {
-    return "LOCKS";
+  if (["heat", "chauffage", "ac", "hvac"].some((w) => t.includes(w))) {
+    return "HVAC";
   }
 
-  if (text.includes("heating") || text.includes("ac") || text.includes("hvac")) {
-    return "HVAC";
+  if (["door", "lock", "clé", "serrure"].some((w) => t.includes(w))) {
+    return "LOCKS";
   }
 
   return "GENERAL";
 }
 
 function detectPriority(message) {
-  const text = normalize(message);
+  const t = text(message);
 
-  if (
-    text.includes("urgent") ||
-    text.includes("emergency") ||
-    text.includes("everywhere") ||
-    text.includes("flood") ||
-    text.includes("danger") ||
-    text.includes("spreading")
-  ) {
+  if (["urgent", "emergency", "flood", "inondation", "fire", "smoke", "everywhere"].some((w) => t.includes(w))) {
+    return "URGENT";
+  }
+
+  if (["not working", "ne marche pas", "no water", "pas d'eau", "no power"].some((w) => t.includes(w))) {
     return "HIGH";
   }
 
   return "MEDIUM";
 }
 
-async function generateUniqueRequestNumber() {
-  const year = new Date().getFullYear();
-
-  while (true) {
-    const random = Math.floor(1000 + Math.random() * 9000);
-    const requestNumber = `MR-${year}-${random}`;
-
-    const existing = await prisma.maintenanceRequest.findUnique({
-      where: { requestNumber },
-    });
-
-    if (!existing) return requestNumber;
-  }
+function yesIntent(message) {
+  const t = text(message).trim();
+  return ["yes", "yeah", "ok", "okay", "sure", "create", "confirm", "oui", "vas-y", "go"].some((w) => t.includes(w));
 }
 
-async function getTenantContext(req) {
-  const organizationId = getOrganizationId(req);
-  const tenantId = req.user?.tenantId;
-
-  if (!organizationId) {
-    return { error: "Organization is required" };
-  }
-
-  if (!tenantId) {
-    return { error: "Tenant account is not linked to a tenant profile" };
-  }
-
-  const tenant = await prisma.tenant.findFirst({
-    where: {
-      id: tenantId,
-      organizationId,
-    },
-    include: {
-      property: true,
-      unit: true,
-      leases: {
-        orderBy: { createdAt: "desc" },
-        take: 1,
-      },
-    },
-  });
-
-  if (!tenant) {
-    return { error: "Unauthorized tenant" };
-  }
-
-  const settings = await prisma.appSetting.findFirst({
-    where: { organizationId },
-  });
-
-  const payments = await prisma.payment.findMany({
-    where: {
-      organizationId,
-      lease: {
-        tenantId,
-      },
-    },
-    orderBy: { paymentDate: "desc" },
-    take: 10,
-    include: {
-      lease: true,
-    },
-  });
-
-  return {
-    organizationId,
-    tenantId,
-    tenant,
-    settings,
-    payments,
-  };
+function noIntent(message) {
+  const t = text(message).trim();
+  return ["no", "non", "cancel", "annuler", "not now"].some((w) => t.includes(w));
 }
 
-function answerTenantQuestion(message, context) {
-  const text = normalize(message);
-  const { tenant, settings, payments } = context;
-
+function answerTenantQuestion(message, tenant) {
+  const t = text(message);
   const fullName = `${tenant.firstName || ""} ${tenant.lastName || ""}`.trim();
+
   const lease = tenant.leases?.[0] || null;
-  const monthlyRent = lease?.rentAmount || tenant.unit?.monthlyRent || 0;
+  const rent = lease?.rentAmount || tenant.unit?.monthlyRent || 0;
 
-  if (text.includes("rent") || text.includes("monthly")) {
-    return `Your monthly rent is ${formatMoney(monthlyRent)}.`;
+  if (t.includes("rent") || t.includes("loyer")) {
+    return `Your monthly rent is $${Number(rent || 0).toFixed(2)}.`;
   }
 
-  if (text.includes("unit") || text.includes("apartment")) {
-    return `Your unit is ${tenant.unit?.unitCode || "not assigned yet"}${
-      tenant.unit?.unitName ? ` — ${tenant.unit.unitName}` : ""
-    }.`;
+  if (t.includes("unit") || t.includes("apartment") || t.includes("appartement")) {
+    return `Your unit is ${tenant.unit?.unitCode || tenant.unit?.unitName || "not assigned yet"}.`;
   }
 
-  if (text.includes("property") || text.includes("house") || text.includes("home")) {
-    return `Your property is ${
-      tenant.property?.name || tenant.property?.code || "not assigned yet"
-    }.`;
+  if (t.includes("property") || t.includes("house") || t.includes("home") || t.includes("maison")) {
+    return `Your property is ${tenant.property?.name || tenant.property?.code || "not assigned yet"}.`;
   }
 
-  if (text.includes("address")) {
-    return `Your property address is ${
-      tenant.property?.addressLine1 || "not configured yet"
-    }${tenant.property?.city ? `, ${tenant.property.city}` : ""}.`;
-  }
-
-  if (text.includes("name") || text.includes("full name")) {
+  if (t.includes("name") || t.includes("full name") || t.includes("nom")) {
     return `Your full name is ${fullName || "not available"}.`;
   }
 
-  if (text.includes("email") || text.includes("mail")) {
+  if (t.includes("email") || t.includes("mail")) {
     return `Your email is ${tenant.email || "not available"}.`;
   }
 
-  if (
-    text.includes("landlord") ||
-    text.includes("admin") ||
-    text.includes("manager") ||
-    text.includes("support")
-  ) {
-    return `You can contact management at ${
-      settings?.supportEmail || settings?.email || "the support email is not configured yet"
-    }.`;
+  if (t.includes("phone") || t.includes("telephone") || t.includes("téléphone")) {
+    return `Your phone number is ${tenant.phone || "not available"}.`;
   }
 
-  if (text.includes("lease") && (text.includes("end") || text.includes("expire"))) {
-    return `Your lease end date is ${
-      lease?.endDate || tenant.leaseEndDate
-        ? new Date(lease?.endDate || tenant.leaseEndDate).toLocaleDateString()
-        : "not configured yet"
-    }.`;
+  if (t.includes("lease") || t.includes("end date") || t.includes("expiration")) {
+    const endDate = lease?.endDate || tenant.leaseEndDate;
+    return endDate
+      ? `Your lease end date is ${new Date(endDate).toLocaleDateString()}.`
+      : "Your lease end date is not available yet.";
   }
 
-  if (text.includes("lease") && (text.includes("start") || text.includes("begin"))) {
-    return `Your lease start date is ${
-      lease?.startDate || tenant.leaseStartDate
-        ? new Date(lease?.startDate || tenant.leaseStartDate).toLocaleDateString()
-        : "not configured yet"
-    }.`;
-  }
-
-  if (text.includes("lease") || text.includes("contract")) {
-    return `Your lease status is ${tenant.leaseStatus || lease?.status || "not configured yet"}.`;
-  }
-
-  if (text.includes("payment") || text.includes("paid") || text.includes("balance")) {
-    const totalPaid = payments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
-    return `Your recent recorded payment total is ${formatMoney(totalPaid)}. Your monthly rent is ${formatMoney(monthlyRent)}.`;
+  if (t.includes("landlord") || t.includes("admin") || t.includes("manager")) {
+    return "For landlord or admin contact, please use the Contact Landlord page or check your tenant contact section.";
   }
 
   return null;
 }
 
-function formatMoney(value) {
-  const amount = Number(value || 0);
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 0,
-  }).format(amount);
-}
-
 router.post("/message", requireAuth, requireRole("TENANT"), async (req, res) => {
   try {
-    const message = String(req.body?.message || "").trim();
+    const organizationId = requireOrg(req, res);
+    if (!organizationId) return;
 
+    const tenantId = req.user?.tenantId;
+    if (!tenantId) {
+      return res.status(400).json({ error: "Tenant not linked to user" });
+    }
+
+    const message = String(req.body?.message || "").trim();
     if (!message) {
       return res.status(400).json({ error: "Message is required" });
     }
 
-    const context = await getTenantContext(req);
+    const tenant = await prisma.tenant.findFirst({
+      where: { id: tenantId, organizationId },
+      include: {
+        property: true,
+        unit: true,
+        leases: {
+          orderBy: { createdAt: "desc" },
+          take: 1,
+        },
+      },
+    });
 
-    if (context.error) {
-      return res.status(403).json({ error: context.error });
+    if (!tenant) {
+      return res.status(403).json({ error: "Unauthorized tenant" });
     }
 
-    const { organizationId, tenantId, tenant } = context;
     const sessionKey = `${organizationId}:${tenantId}`;
-    const currentSession = sessions.get(sessionKey);
+    const currentSession = chatSessions.get(sessionKey);
 
-    if (currentSession?.mode === "MAINTENANCE") {
-      if (currentSession.step === "ASK_ACTIVE") {
-        currentSession.activeIssue = message;
-        currentSession.step = "ASK_LOCATION";
-        sessions.set(sessionKey, currentSession);
-
-        return res.json({
-          success: true,
-          action: "ASK_LOCATION",
-          reply:
-            "Where exactly is the problem located? For example: kitchen sink, bathroom, ceiling, floor, pipe, or appliance.",
-        });
-      }
-
-      if (currentSession.step === "ASK_LOCATION") {
-        currentSession.location = message;
-        currentSession.step = "ASK_URGENCY";
-        sessions.set(sessionKey, currentSession);
-
-        return res.json({
-          success: true,
-          action: "ASK_URGENCY",
-          reply:
-            "Is this urgent? Is it causing damage, spreading, or stopping you from using part of the house?",
-        });
-      }
-
-      if (currentSession.step === "ASK_URGENCY") {
-        currentSession.urgency = message;
-        currentSession.priority = detectPriority(
-          `${currentSession.originalMessage} ${message}`
-        );
-        currentSession.step = "CONFIRM_CREATE";
-        sessions.set(sessionKey, currentSession);
-
-        return res.json({
-          success: true,
-          action: "CONFIRM_CREATE",
-          reply: `Thank you. I can create a ${currentSession.priority} priority ${currentSession.category} maintenance request for "${currentSession.originalMessage}" at "${currentSession.location}". Do you want me to create it now?`,
-        });
-      }
-
-      if (currentSession.step === "CONFIRM_CREATE") {
-        if (isNo(message)) {
-          sessions.delete(sessionKey);
-
-          return res.json({
-            success: true,
-            action: "CANCELLED",
-            reply:
-              "Okay, I did not create the maintenance request. You can message me again when you want to submit it.",
-          });
-        }
-
-        if (!isYes(message)) {
-          return res.json({
-            success: true,
-            action: "WAITING_CONFIRMATION",
-            reply:
-              "Please confirm if you want me to create the maintenance request. Reply with Yes to create it, or No to cancel.",
-          });
-        }
-
-        if (!tenant.propertyId) {
-          sessions.delete(sessionKey);
-
-          return res.status(400).json({
-            error: "Tenant has no property linked",
-          });
-        }
-
+    if (currentSession?.type === "MAINTENANCE_CONFIRMATION") {
+      if (yesIntent(message)) {
         const requestNumber = await generateUniqueRequestNumber();
 
-        const title = `Tenant Issue - ${currentSession.category}`;
-        const description = [
-          `Initial message: ${currentSession.originalMessage}`,
-          `Current status: ${currentSession.activeIssue}`,
-          `Location: ${currentSession.location}`,
-          `Urgency details: ${currentSession.urgency}`,
-        ].join("\n");
-
-        const maintenanceRequest = await prisma.maintenanceRequest.create({
+        const createdRequest = await prisma.maintenanceRequest.create({
           data: {
             organizationId,
             requestNumber,
             propertyId: tenant.propertyId,
             unitId: tenant.unitId || null,
             tenantId: tenant.id,
-            title,
-            description,
+            title: currentSession.title,
+            description: currentSession.description,
             category: currentSession.category,
             priority: currentSession.priority,
             status: "OPEN",
-            locationNote: currentSession.location,
-            entryPermission: false,
+            entryPermission: currentSession.entryPermission || false,
+            locationNote: currentSession.locationNote || null,
           },
           include: {
             property: true,
             unit: true,
             tenant: true,
+            contractor: true,
           },
         });
+
+        chatSessions.delete(sessionKey);
 
         try {
           await createNotification({
             tenantId: tenant.id,
             title: "Maintenance request created",
-            message: `Your request ${requestNumber} has been submitted successfully.`,
+            message: `Your request ${createdRequest.requestNumber} has been created from the chatbot.`,
             type: "INFO",
             category: "MAINTENANCE",
           });
-        } catch (notificationError) {
-          console.error("Chatbot notification error:", notificationError);
+        } catch (err) {
+          console.error("Chatbot notification error:", err);
         }
-
-        sessions.delete(sessionKey);
 
         return res.status(201).json({
           success: true,
           action: "MAINTENANCE_CREATED",
-          reply: `I have created a maintenance request for you. Your request number is ${requestNumber}. Our team will review it shortly.`,
-          maintenanceRequest,
+          reply: `I have created your maintenance request. Your request number is ${createdRequest.requestNumber}. Our team will review it shortly.`,
+          maintenanceRequest: createdRequest,
         });
       }
+
+      if (noIntent(message)) {
+        chatSessions.delete(sessionKey);
+        return res.json({
+          success: true,
+          action: "CANCELLED",
+          reply: "Okay, I cancelled the maintenance request creation. You can describe the issue again whenever you are ready.",
+        });
+      }
+
+      currentSession.description += `\nAdditional detail: ${message}`;
+      chatSessions.set(sessionKey, currentSession);
+
+      return res.json({
+        success: true,
+        action: "ASK_CONFIRMATION",
+        reply: "Thank you for the extra detail. Should I create a maintenance request now so a qualified technician can review it? Reply Yes or No.",
+      });
     }
 
-    const directAnswer = answerTenantQuestion(message, context);
-
+    const directAnswer = answerTenantQuestion(message, tenant);
     if (directAnswer) {
       return res.json({
         success: true,
@@ -416,34 +257,44 @@ router.post("/message", requireAuth, requireRole("TENANT"), async (req, res) => 
       });
     }
 
-    if (detectMaintenanceIssue(message)) {
-      const category = detectCategory(message);
+    if (detectMaintenanceIntent(message)) {
+      if (!tenant.propertyId) {
+        return res.status(400).json({ error: "Tenant has no property linked" });
+      }
 
-      sessions.set(sessionKey, {
-        mode: "MAINTENANCE",
-        step: "ASK_ACTIVE",
-        originalMessage: message,
+      const category = detectCategory(message);
+      const priority = detectPriority(message);
+
+      chatSessions.set(sessionKey, {
+        type: "MAINTENANCE_CONFIRMATION",
+        title: `Tenant Issue - ${category}`,
+        description: message,
         category,
-        priority: detectPriority(message),
+        priority,
+        entryPermission: false,
+        locationNote: tenant.unit?.unitCode
+          ? `Reported from tenant chatbot - Unit ${tenant.unit.unitCode}`
+          : "Reported from tenant chatbot",
       });
 
       return res.json({
         success: true,
-        action: "ASK_ACTIVE",
+        action: "ASK_CONFIRMATION",
         reply:
-          "I understand this may be a maintenance issue. Is the problem still happening right now? Please describe what is happening currently.",
+          `I understand there is a ${category.toLowerCase().replace("_", " ")} issue. ` +
+          `Before I create the request, can you confirm: is this happening now, and should we create a maintenance request for a qualified technician to come for intervention? Reply Yes or No.`,
       });
     }
 
     return res.json({
       success: true,
-      action: "GENERAL",
+      action: "ANSWER",
       reply: `Hello ${tenant.firstName || ""} 👋 I can help you with your rent, lease, unit, property, payments, documents, landlord contact, or maintenance issues.`,
     });
   } catch (error) {
     console.error("POST /api/tenant-chatbot/message error:", error);
     return res.status(500).json({
-      error: error.message || "Tenant assistant failed to respond",
+      error: error?.message || "Failed to process chatbot message",
     });
   }
 });
