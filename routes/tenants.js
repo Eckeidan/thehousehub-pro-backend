@@ -1,6 +1,7 @@
 const express = require("express");
 const prisma = require("../lib/prisma");
 const bcrypt = require("bcryptjs");
+const nodemailer = require("nodemailer");
 const { requireAuth, requireRole } = require("../middleware/auth");
 
 const router = express.Router();
@@ -23,6 +24,139 @@ function requireOrg(req, res) {
   return organizationId;
 }
 
+function generatePassword(length = 10) {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789@$!";
+  let password = "";
+
+  for (let i = 0; i < length; i++) {
+    password += chars[Math.floor(Math.random() * chars.length)];
+  }
+
+  return password;
+}
+
+function createTransporter() {
+  return nodemailer.createTransport({
+    host: process.env.SMTP_HOST,
+    port: Number(process.env.SMTP_PORT || 465),
+    secure: String(process.env.SMTP_SECURE || "true") === "true",
+    auth: {
+      user: process.env.SMTP_USER,
+      pass: process.env.SMTP_PASS,
+    },
+  });
+}
+
+function formatDate(value) {
+  if (!value) return "N/A";
+
+  try {
+    return new Date(value).toLocaleDateString("en-US", {
+      year: "numeric",
+      month: "long",
+      day: "2-digit",
+    });
+  } catch {
+    return "N/A";
+  }
+}
+
+function formatMoney(value) {
+  if (value === null || value === undefined) return "N/A";
+
+  const amount = Number(value);
+
+  if (Number.isNaN(amount)) return "N/A";
+
+  return `$${amount.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+async function sendTenantWelcomeEmail({
+  to,
+  fullName,
+  password,
+  property,
+  leaseStartDate,
+  leaseEndDate,
+  monthlyRent,
+}) {
+  const appUrl = process.env.FRONTEND_URL || "https://thehousehub.app/login";
+  const brandName = process.env.EMAIL_BRAND_NAME || "The House Hub";
+  const logoUrl = process.env.EMAIL_LOGO_URL || "";
+  const transporter = createTransporter();
+
+  const propertyName = property?.name || property?.code || "Assigned property";
+  const propertyAddress = [
+    property?.addressLine1,
+    property?.city,
+    property?.state,
+    property?.country,
+  ]
+    .filter(Boolean)
+    .join(", ");
+
+  await transporter.sendMail({
+    from: process.env.EMAIL_FROM || `"${brandName}" <${process.env.SMTP_USER}>`,
+    to,
+    subject: `Your ${brandName} tenant account is ready`,
+    html: `
+      <div style="font-family:Arial,sans-serif;background:#f4f7fb;padding:24px;">
+        <div style="max-width:640px;margin:auto;background:#ffffff;border-radius:18px;overflow:hidden;border:1px solid #e5e7eb;">
+          <div style="background:linear-gradient(90deg,#1f3270,#45C9B5);padding:26px;color:#ffffff;">
+            ${
+              logoUrl
+                ? `<img src="${logoUrl}" alt="${brandName}" style="height:46px;margin-bottom:14px;" />`
+                : ""
+            }
+            <h2 style="margin:0;font-size:24px;">Welcome to ${brandName}</h2>
+            <p style="margin:8px 0 0;opacity:.9;">Your tenant account has been created.</p>
+          </div>
+
+          <div style="padding:28px;color:#111827;">
+            <p>Hello <strong>${fullName}</strong>,</p>
+            <p>Your tenant portal account is ready. Use the information below to login.</p>
+
+            <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:14px;padding:18px;margin:22px 0;">
+              <p><strong>Login URL:</strong> <a href="${appUrl}">${appUrl}</a></p>
+              <p><strong>Email:</strong> ${to}</p>
+              <p><strong>Temporary Password:</strong> ${password}</p>
+              <p><strong>Role:</strong> Tenant</p>
+            </div>
+
+            <h3 style="margin:24px 0 10px;color:#1f3270;">Your rental information</h3>
+
+            <div style="background:#ffffff;border:1px solid #e5e7eb;border-radius:14px;padding:18px;margin-bottom:22px;">
+              <p><strong>Property:</strong> ${propertyName}</p>
+              <p><strong>Address:</strong> ${propertyAddress || "N/A"}</p>
+              <p><strong>Lease Start:</strong> ${formatDate(leaseStartDate)}</p>
+              <p><strong>Lease End:</strong> ${formatDate(leaseEndDate)}</p>
+              <p><strong>Monthly Payment:</strong> ${formatMoney(monthlyRent)}</p>
+            </div>
+
+            <div style="text-align:center;margin-top:26px;">
+              <a href="${appUrl}"
+                style="display:inline-block;background:#2563eb;color:#ffffff;padding:13px 24px;border-radius:12px;text-decoration:none;font-weight:bold;">
+                Login Now
+              </a>
+            </div>
+
+            <p style="margin-top:22px;color:#6b7280;font-size:13px;">
+              For security, please change your temporary password after your first login.
+            </p>
+          </div>
+
+          <div style="background:#f1f5f9;padding:16px;text-align:center;color:#64748b;font-size:12px;">
+            © ${new Date().getFullYear()} ${brandName}. All rights reserved.
+          </div>
+        </div>
+      </div>
+    `,
+  });
+}
+
 /* GET all tenants */
 router.get("/", async (req, res) => {
   try {
@@ -35,9 +169,7 @@ router.get("/", async (req, res) => {
         property: true,
         unit: true,
         user: true,
-        leases: {
-          orderBy: { createdAt: "desc" },
-        },
+        leases: { orderBy: { createdAt: "desc" } },
       },
       orderBy: { createdAt: "desc" },
     });
@@ -65,17 +197,13 @@ router.get("/:id", async (req, res) => {
         property: true,
         unit: true,
         user: true,
-        leases: {
-          orderBy: { createdAt: "desc" },
-        },
+        leases: { orderBy: { createdAt: "desc" } },
         maintenanceRequests: true,
         documents: true,
       },
     });
 
-    if (!tenant) {
-      return res.status(404).json({ error: "Tenant not found" });
-    }
+    if (!tenant) return res.status(404).json({ error: "Tenant not found" });
 
     return res.json(tenant);
   } catch (error) {
@@ -108,46 +236,31 @@ router.post("/", async (req, res) => {
     } = req.body || {};
 
     if (!firstName || !lastName) {
-      return res.status(400).json({
-        error: "First name and last name are required",
-      });
+      return res.status(400).json({ error: "First name and last name are required" });
     }
 
     if (!propertyId) {
-      return res.status(400).json({
-        error: "Property is required",
-      });
+      return res.status(400).json({ error: "Property is required" });
     }
 
     const property = await prisma.property.findFirst({
-      where: {
-        id: propertyId,
-        organizationId,
-      },
+      where: { id: propertyId, organizationId },
     });
 
     if (!property) {
-      return res.status(404).json({
-        error: "Property not found in your organization",
-      });
+      return res.status(404).json({ error: "Property not found in your organization" });
     }
 
     const existingActiveTenant = await prisma.tenant.findFirst({
-      where: {
-        organizationId,
-        propertyId,
-        isActive: true,
-      },
+      where: { organizationId, propertyId, isActive: true },
     });
 
     if (existingActiveTenant && status !== "INACTIVE") {
-      return res.status(400).json({
-        error: "This property already has an active tenant",
-      });
+      return res.status(400).json({ error: "This property already has an active tenant" });
     }
 
     const finalStatus = status || "ACTIVE";
-    const isActive = finalStatus === "INACTIVE" ? false : true;
+    const isActive = finalStatus !== "INACTIVE";
 
     const result = await prisma.$transaction(async (tx) => {
       const tenant = await tx.tenant.create({
@@ -155,19 +268,12 @@ router.post("/", async (req, res) => {
           organizationId,
           propertyId,
           unitId: unitId || null,
-
           firstName: String(firstName).trim(),
           lastName: String(lastName).trim(),
           email: email ? String(email).trim().toLowerCase() : null,
           phone: phone ? String(phone).trim() : null,
-
-          emergencyContactName: emergencyContactName
-            ? String(emergencyContactName).trim()
-            : null,
-          emergencyContactPhone: emergencyContactPhone
-            ? String(emergencyContactPhone).trim()
-            : null,
-
+          emergencyContactName: emergencyContactName ? String(emergencyContactName).trim() : null,
+          emergencyContactPhone: emergencyContactPhone ? String(emergencyContactPhone).trim() : null,
           leaseStartDate: leaseStart ? new Date(leaseStart) : null,
           leaseEndDate: leaseEnd ? new Date(leaseEnd) : null,
           leaseStatus: isActive ? "ACTIVE" : "TERMINATED",
@@ -180,16 +286,11 @@ router.post("/", async (req, res) => {
 
       await tx.property.update({
         where: { id: propertyId },
-        data: {
-          occupancyStatus: isActive ? "OCCUPIED" : "AVAILABLE",
-        },
+        data: { occupancyStatus: isActive ? "OCCUPIED" : "AVAILABLE" },
       });
 
       const fullTenant = await tx.tenant.findFirst({
-        where: {
-          id: tenant.id,
-          organizationId,
-        },
+        where: { id: tenant.id, organizationId },
         include: {
           property: true,
           unit: true,
@@ -220,32 +321,30 @@ router.post("/:id/create-account", async (req, res) => {
     const { id } = req.params;
     const { email, password, fullName } = req.body || {};
 
-    if (!email || !String(email).trim()) {
-      return res.status(400).json({ error: "Email is required" });
-    }
-
-    if (!password || String(password).length < 6) {
-      return res.status(400).json({
-        error: "Password must be at least 6 characters",
-      });
-    }
-
     const tenant = await prisma.tenant.findFirst({
       where: { id, organizationId },
-      include: { user: true },
+      include: {
+        user: true,
+        property: true,
+        unit: true,
+      },
     });
 
-    if (!tenant) {
-      return res.status(404).json({ error: "Tenant not found" });
-    }
+    if (!tenant) return res.status(404).json({ error: "Tenant not found" });
 
     if (tenant.user) {
+      return res.status(400).json({ error: "This tenant already has an account" });
+    }
+
+    const finalEmail = email || tenant.email;
+
+    if (!finalEmail || !String(finalEmail).trim()) {
       return res.status(400).json({
-        error: "This tenant already has an account",
+        error: "Tenant email is required before creating account",
       });
     }
 
-    const cleanEmail = String(email).trim().toLowerCase();
+    const cleanEmail = String(finalEmail).trim().toLowerCase();
 
     const existingUser = await prisma.user.findUnique({
       where: { email: cleanEmail },
@@ -257,7 +356,10 @@ router.post("/:id/create-account", async (req, res) => {
       });
     }
 
-    const passwordHash = await bcrypt.hash(password, 10);
+    const temporaryPassword =
+      password && String(password).length >= 6 ? String(password) : generatePassword();
+
+    const passwordHash = await bcrypt.hash(temporaryPassword, 10);
 
     const createdUser = await prisma.user.create({
       data: {
@@ -276,9 +378,7 @@ router.post("/:id/create-account", async (req, res) => {
 
     const updatedTenant = await prisma.tenant.update({
       where: { id: tenant.id },
-      data: {
-        email: cleanEmail,
-      },
+      data: { email: cleanEmail },
       include: {
         property: true,
         unit: true,
@@ -286,8 +386,18 @@ router.post("/:id/create-account", async (req, res) => {
       },
     });
 
+    await sendTenantWelcomeEmail({
+      to: cleanEmail,
+      fullName: createdUser.fullName,
+      password: temporaryPassword,
+      property: tenant.property,
+      leaseStartDate: tenant.leaseStartDate,
+      leaseEndDate: tenant.leaseEndDate,
+      monthlyRent: tenant.monthlyRent,
+    });
+
     return res.status(201).json({
-      message: "Tenant account created successfully",
+      message: "Tenant account created successfully and email sent",
       user: {
         id: createdUser.id,
         fullName: createdUser.fullName,
@@ -316,15 +426,10 @@ router.patch("/:id/move-out", async (req, res) => {
 
     const existingTenant = await prisma.tenant.findFirst({
       where: { id, organizationId },
-      include: {
-        property: true,
-        unit: true,
-      },
+      include: { property: true, unit: true },
     });
 
-    if (!existingTenant) {
-      return res.status(404).json({ error: "Tenant not found" });
-    }
+    if (!existingTenant) return res.status(404).json({ error: "Tenant not found" });
 
     const updatedTenant = await prisma.tenant.update({
       where: { id },
@@ -333,11 +438,7 @@ router.patch("/:id/move-out", async (req, res) => {
         isActive: false,
         leaseStatus: "TERMINATED",
       },
-      include: {
-        property: true,
-        unit: true,
-        user: true,
-      },
+      include: { property: true, unit: true, user: true },
     });
 
     if (existingTenant.propertyId) {
@@ -353,31 +454,14 @@ router.patch("/:id/move-out", async (req, res) => {
       if (!remainingActiveTenant) {
         await prisma.property.update({
           where: { id: existingTenant.propertyId },
-          data: {
-            occupancyStatus: "AVAILABLE",
-          },
+          data: { occupancyStatus: "AVAILABLE" },
         });
       }
     }
 
-    if (existingTenant.unit?.id) {
-      await prisma.unit.update({
-        where: { id: existingTenant.unit.id },
-        data: {
-          occupancyStatus: "AVAILABLE",
-        },
-      });
-    }
-
     await prisma.lease.updateMany({
-      where: {
-        organizationId,
-        tenantId: id,
-        status: "ACTIVE",
-      },
-      data: {
-        status: "TERMINATED",
-      },
+      where: { organizationId, tenantId: id, status: "ACTIVE" },
+      data: { status: "TERMINATED" },
     });
 
     return res.json({
@@ -402,27 +486,17 @@ router.delete("/:id", async (req, res) => {
 
     const tenant = await prisma.tenant.findFirst({
       where: { id, organizationId },
-      include: {
-        property: true,
-        unit: true,
-        user: true,
-      },
+      include: { property: true, unit: true, user: true },
     });
 
-    if (!tenant) {
-      return res.status(404).json({ error: "Tenant not found" });
-    }
+    if (!tenant) return res.status(404).json({ error: "Tenant not found" });
 
     await prisma.$transaction(async (tx) => {
       if (tenant.user?.id) {
-        await tx.user.delete({
-          where: { id: tenant.user.id },
-        });
+        await tx.user.delete({ where: { id: tenant.user.id } });
       }
 
-      await tx.tenant.delete({
-        where: { id },
-      });
+      await tx.tenant.delete({ where: { id } });
 
       if (tenant.propertyId) {
         const remainingActiveTenant = await tx.tenant.findFirst({
@@ -436,28 +510,7 @@ router.delete("/:id", async (req, res) => {
         if (!remainingActiveTenant) {
           await tx.property.update({
             where: { id: tenant.propertyId },
-            data: {
-              occupancyStatus: "AVAILABLE",
-            },
-          });
-        }
-      }
-
-      if (tenant.unitId) {
-        const remainingActiveTenantOnUnit = await tx.tenant.findFirst({
-          where: {
-            organizationId,
-            unitId: tenant.unitId,
-            isActive: true,
-          },
-        });
-
-        if (!remainingActiveTenantOnUnit) {
-          await tx.unit.update({
-            where: { id: tenant.unitId },
-            data: {
-              occupancyStatus: "AVAILABLE",
-            },
+            data: { occupancyStatus: "AVAILABLE" },
           });
         }
       }
@@ -497,21 +550,13 @@ router.put("/:id", async (req, res) => {
 
     const existingTenant = await prisma.tenant.findFirst({
       where: { id, organizationId },
-      include: {
-        property: true,
-        unit: true,
-        user: true,
-      },
+      include: { property: true, unit: true, user: true },
     });
 
-    if (!existingTenant) {
-      return res.status(404).json({ error: "Tenant not found" });
-    }
+    if (!existingTenant) return res.status(404).json({ error: "Tenant not found" });
 
     if (!firstName || !lastName) {
-      return res.status(400).json({
-        error: "First name and last name are required",
-      });
+      return res.status(400).json({ error: "First name and last name are required" });
     }
 
     if (!propertyId) {
@@ -522,9 +567,7 @@ router.put("/:id", async (req, res) => {
       where: { id: propertyId, organizationId },
     });
 
-    if (!property) {
-      return res.status(404).json({ error: "Selected property not found" });
-    }
+    if (!property) return res.status(404).json({ error: "Selected property not found" });
 
     const conflictingTenant = await prisma.tenant.findFirst({
       where: {
@@ -542,7 +585,7 @@ router.put("/:id", async (req, res) => {
     }
 
     const finalStatus = status || "ACTIVE";
-    const isActive = finalStatus === "INACTIVE" ? false : true;
+    const isActive = finalStatus !== "INACTIVE";
 
     const updatedTenant = await prisma.tenant.update({
       where: { id },
@@ -551,31 +594,19 @@ router.put("/:id", async (req, res) => {
         lastName: String(lastName).trim(),
         email: email ? String(email).trim().toLowerCase() : null,
         phone: phone ? String(phone).trim() : null,
-
         leaseStartDate: leaseStartDate ? new Date(leaseStartDate) : null,
         leaseEndDate: leaseEndDate ? new Date(leaseEndDate) : null,
-
-        emergencyContactName: emergencyContactName
-          ? String(emergencyContactName).trim()
-          : null,
-        emergencyContactPhone: emergencyContactPhone
-          ? String(emergencyContactPhone).trim()
-          : null,
-
+        emergencyContactName: emergencyContactName ? String(emergencyContactName).trim() : null,
+        emergencyContactPhone: emergencyContactPhone ? String(emergencyContactPhone).trim() : null,
         status: finalStatus,
         isActive,
         leaseStatus: isActive ? "ACTIVE" : "TERMINATED",
         notes: notes ? String(notes).trim() : null,
-
         propertyId,
         unitId: unitId || null,
         monthlyRent: property.monthlyRent || null,
       },
-      include: {
-        property: true,
-        unit: true,
-        user: true,
-      },
+      include: { property: true, unit: true, user: true },
     });
 
     if (existingTenant.user?.id) {
@@ -607,9 +638,7 @@ router.put("/:id", async (req, res) => {
 
     await prisma.property.update({
       where: { id: propertyId },
-      data: {
-        occupancyStatus: isActive ? "OCCUPIED" : "AVAILABLE",
-      },
+      data: { occupancyStatus: isActive ? "OCCUPIED" : "AVAILABLE" },
     });
 
     return res.json(updatedTenant);

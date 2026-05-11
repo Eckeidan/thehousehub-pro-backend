@@ -17,44 +17,60 @@ router.get(
       const organizationId = getOrganizationId(req);
 
       if (!organizationId) {
-        return res.status(403).json({ error: "Organization is required" });
+        return res.status(403).json({
+          error: "Organization is required",
+        });
       }
 
       console.log("✅ DASHBOARD ORG:", organizationId);
 
-      /* 🔒 CRITICAL: FILTER BY organizationId */
+      /* 🔒 MULTI-TENANT SAFE COUNTS */
 
       const totalProperties = await prisma.property.count({
-        where: { organizationId },
+        where: {
+          organizationId,
+          isActive: true,
+        },
       });
 
-      const totalUnits = await prisma.unit.count({
-        where: { organizationId },
-      });
+      /* Units removed from occupancy logic */
+      const totalUnits = 0;
 
       const totalTenants = await prisma.tenant.count({
-        where: { organizationId },
+        where: {
+          organizationId,
+          isActive: true,
+        },
       });
 
       const openMaintenance = await prisma.maintenanceRequest.count({
         where: {
           organizationId,
           status: {
-            in: ["OPEN", "IN_PROGRESS"],
+            in: ["OPEN", "IN_PROGRESS", "ON_HOLD"],
           },
         },
       });
 
-      const occupiedUnits = await prisma.unit.count({
+      /* ✅ NEW OCCUPANCY LOGIC:
+         Occupied property = property having at least one active tenant
+      */
+      const occupiedProperties = await prisma.property.count({
         where: {
           organizationId,
-          occupancyStatus: "OCCUPIED",
+          isActive: true,
+          tenants: {
+            some: {
+              organizationId,
+              isActive: true,
+            },
+          },
         },
       });
 
       const occupancyRate =
-        totalUnits > 0
-          ? Math.round((occupiedUnits / totalUnits) * 100)
+        totalProperties > 0
+          ? Math.round((occupiedProperties / totalProperties) * 100)
           : 0;
 
       return res.json({
@@ -63,9 +79,11 @@ router.get(
         totalTenants,
         occupancyRate,
         openMaintenance,
+        occupiedProperties,
       });
     } catch (error) {
       console.error("❌ Dashboard error:", error);
+
       return res.status(500).json({
         error: error.message || "Failed to load dashboard data",
       });
