@@ -10,13 +10,6 @@ const router = express.Router();
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    const allowed = ["image/jpeg", "image/png", "image/webp"];
-    if (!allowed.includes(file.mimetype)) {
-      return cb(new Error("Only JPG, PNG, or WEBP files are allowed"));
-    }
-    cb(null, true);
-  },
 });
 
 function uploadToCloudinary(fileBuffer, folder) {
@@ -33,10 +26,40 @@ function uploadToCloudinary(fileBuffer, folder) {
   });
 }
 
-/**
- * POST /api/tenant/payments
- * Tenant submits manual payment proof.
- */
+/* GET tenant payments */
+router.get("/", requireAuth, requireRole("TENANT"), async (req, res) => {
+  try {
+    const tenantId = req.user?.tenantId;
+
+    if (!tenantId) {
+      return res.status(403).json({ error: "Tenant profile not found" });
+    }
+
+    const payments = await prisma.rentPayment.findMany({
+      where: { tenantId },
+      orderBy: { createdAt: "desc" },
+    });
+
+    return res.json(
+      payments.map((payment) => ({
+        id: payment.id,
+        amount: Number(payment.amountPaid || 0),
+        paymentDate: payment.paymentDate || payment.createdAt,
+        paymentMethod: payment.paymentMethod || "BANK_TRANSFER",
+        status: payment.status,
+        reference: payment.referenceNumber,
+        notes: payment.notes,
+      }))
+    );
+  } catch (error) {
+    console.error("Tenant payments history error:", error);
+    return res.status(500).json({
+      error: error.message || "Failed to load payments",
+    });
+  }
+});
+
+/* POST tenant payment */
 router.post(
   "/",
   requireAuth,
@@ -45,35 +68,38 @@ router.post(
   async (req, res) => {
     try {
       const tenantId = req.user?.tenantId;
+      const organizationId = req.user?.organizationId;
 
-      if (!tenantId) {
+      if (!tenantId || !organizationId) {
         return res.status(403).json({ error: "Tenant profile not found" });
       }
 
       const { amount, paymentMethod, reference, notes } = req.body || {};
-
       const numericAmount = Number(amount);
 
       if (!numericAmount || numericAmount <= 0) {
         return res.status(400).json({ error: "Valid amount is required" });
       }
 
-      const tenant = await prisma.tenant.findUnique({
-        where: { id: tenantId },
+      const tenant = await prisma.tenant.findFirst({
+        where: {
+          id: tenantId,
+          organizationId,
+        },
         include: {
-          leases: {
-            where: { status: "ACTIVE" },
-            orderBy: { createdAt: "desc" },
-            take: 1,
-          },
+          property: true,
         },
       });
 
-      if (!tenant || !tenant.leases || tenant.leases.length === 0) {
-        return res.status(400).json({ error: "No active lease found" });
+      if (!tenant) {
+        return res.status(404).json({ error: "Tenant not found" });
       }
 
-      const activeLease = tenant.leases[0];
+      if (!tenant.propertyId) {
+        return res.status(400).json({
+          error: "Tenant has no property linked",
+        });
+      }
 
       let proofImageUrl = null;
       let proofFileName = null;
@@ -90,18 +116,19 @@ router.post(
         proofMimeType = req.file.mimetype;
       }
 
-      const payment = await prisma.payment.create({
+      const payment = await prisma.rentPayment.create({
         data: {
-          leaseId: activeLease.id,
-          amount: numericAmount,
+          propertyId: tenant.propertyId,
+          tenantId: tenant.id,
+          amountDue:
+            tenant.monthlyRent || tenant.property?.monthlyRent || numericAmount,
+          amountPaid: numericAmount,
           paymentDate: new Date(),
-          paymentMethod: paymentMethod || "BANK_TRANSFER",
+          dueDate: new Date(),
           status: "PENDING",
-          reference: reference?.trim() || null,
-          notes: notes?.trim() || null,
-          proofImageUrl,
-          proofFileName,
-          proofMimeType,
+          paymentMethod: paymentMethod || "BANK_TRANSFER",
+          referenceNumber: reference ? String(reference).trim() : null,
+          notes: notes ? String(notes).trim() : null,
         },
       });
 
@@ -109,6 +136,11 @@ router.post(
         success: true,
         message: "Payment proof submitted successfully",
         payment,
+        proof: {
+          proofImageUrl,
+          proofFileName,
+          proofMimeType,
+        },
       });
     } catch (error) {
       console.error("Tenant payment submit error:", error);
@@ -118,39 +150,5 @@ router.post(
     }
   }
 );
-
-/**
- * GET /api/tenant/payments
- * Tenant payment history.
- */
-router.get("/", requireAuth, requireRole("TENANT"), async (req, res) => {
-  try {
-    const tenantId = req.user?.tenantId;
-
-    const tenant = await prisma.tenant.findUnique({
-      where: { id: tenantId },
-      include: {
-        leases: {
-          include: {
-            payments: {
-              orderBy: { paymentDate: "desc" },
-            },
-          },
-        },
-      },
-    });
-
-    if (!tenant) {
-      return res.status(404).json({ error: "Tenant not found" });
-    }
-
-    const payments = tenant.leases.flatMap((lease) => lease.payments || []);
-
-    return res.json(payments);
-  } catch (error) {
-    console.error("Tenant payments history error:", error);
-    return res.status(500).json({ error: "Failed to load payments" });
-  }
-});
 
 module.exports = router;
