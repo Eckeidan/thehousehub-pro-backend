@@ -344,6 +344,7 @@ router.post(
 );
 
 /* GET /api/tenant/maintenance/:id */
+/* GET /api/tenant/maintenance/:id */
 router.get("/:id", requireAuth, requireRole("TENANT"), async (req, res) => {
   try {
     const organizationId = requireOrg(req, res);
@@ -354,25 +355,26 @@ router.get("/:id", requireAuth, requireRole("TENANT"), async (req, res) => {
     if (!tenant) {
       return res.status(403).json({
         error: "Unauthorized tenant",
-        debug: {
-          tokenTenantId: req.user?.tenantId || null,
-          userId: req.user?.userId || req.user?.id || null,
-          email: req.user?.email || null,
-          organizationId,
-        },
       });
     }
 
     const request = await prisma.maintenanceRequest.findFirst({
       where: {
         id: req.params.id,
-        tenantId: tenant.id,
         organizationId,
+        tenantId: tenant.id,
       },
       include: {
         property: true,
         unit: true,
-        tenant: true,
+        tenant: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+          },
+        },
         contractor: true,
         aiRecommendations: {
           where: { type: "CONTRACTOR_SUGGESTION" },
@@ -392,7 +394,7 @@ router.get("/:id", requireAuth, requireRole("TENANT"), async (req, res) => {
   } catch (error) {
     console.error("GET /api/tenant/maintenance/:id error:", error);
     return res.status(500).json({
-      error: "Failed to load maintenance request",
+      error: error.message || "Failed to load maintenance request",
     });
   }
 });
