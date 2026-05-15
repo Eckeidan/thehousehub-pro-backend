@@ -9,13 +9,36 @@ const router = express.Router();
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 },
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowed = [
+      "image/jpeg",
+      "image/png",
+      "image/webp",
+      "application/pdf",
+      "application/msword",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ];
+
+    if (!allowed.includes(file.mimetype)) {
+      return cb(
+        new Error("Only JPG, PNG, WEBP, PDF, DOC, or DOCX files are allowed")
+      );
+    }
+
+    cb(null, true);
+  },
 });
 
-function uploadToCloudinary(fileBuffer, folder) {
+function uploadToCloudinary(fileBuffer, folder, mimetype) {
   return new Promise((resolve, reject) => {
+    const resourceType = mimetype.startsWith("image/") ? "image" : "raw";
+
     const stream = cloudinary.uploader.upload_stream(
-      { folder, resource_type: "image" },
+      {
+        folder,
+        resource_type: resourceType,
+      },
       (error, result) => {
         if (error) return reject(error);
         resolve(result);
@@ -108,7 +131,8 @@ router.post(
       if (req.file) {
         const uploaded = await uploadToCloudinary(
           req.file.buffer,
-          "propertyos/payment-proofs"
+          "propertyos/payment-proofs",
+          req.file.mimetype
         );
 
         proofImageUrl = uploaded.secure_url;
