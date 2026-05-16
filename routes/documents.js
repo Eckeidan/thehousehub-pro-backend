@@ -227,6 +227,63 @@ router.post("/", upload.single("file"), async (req, res) => {
   }
 });
 
+/* VIEW /api/documents/:id/view */
+router.get("/:id/view", async (req, res) => {
+  try {
+    const organizationId = requireOrg(req, res);
+    if (!organizationId) return;
+
+    const document = await prisma.document.findFirst({
+      where: { id: req.params.id, organizationId },
+    });
+
+    if (!document) {
+      return res.status(404).send("Document not found");
+    }
+
+    const fileName = path.basename(document.fileUrl || "");
+    const filePath = path.join(uploadDir, fileName);
+
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).send("File missing on server");
+    }
+
+    res.setHeader("Content-Type", document.mimeType || "application/octet-stream");
+    return res.sendFile(filePath);
+  } catch (error) {
+    console.error("View document error:", error);
+    return res.status(500).send("Failed to view document");
+  }
+});
+
+/* DOWNLOAD /api/documents/:id/download */
+router.get("/:id/download", async (req, res) => {
+  try {
+    const organizationId = requireOrg(req, res);
+    if (!organizationId) return;
+
+    const document = await prisma.document.findFirst({
+      where: { id: req.params.id, organizationId },
+    });
+
+    if (!document) {
+      return res.status(404).json({ error: "Document not found" });
+    }
+
+    const fileName = path.basename(document.fileUrl || "");
+    const filePath = path.join(uploadDir, fileName);
+
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: "File missing on server" });
+    }
+
+    return res.download(filePath, document.documentName || fileName);
+  } catch (error) {
+    console.error("Download document error:", error);
+    return res.status(500).json({ error: "Failed to download document" });
+  }
+});
+
 /* DELETE /api/documents/:id */
 router.delete("/:id", async (req, res) => {
   try {
@@ -244,21 +301,37 @@ router.delete("/:id", async (req, res) => {
       return res.status(404).json({ error: "Document not found" });
     }
 
-    const fileName = existingDocument.fileUrl?.split("/").pop();
-    const absoluteFilePath = fileName ? path.join(uploadDir, fileName) : null;
+    const fileName = existingDocument.fileUrl
+      ? path.basename(existingDocument.fileUrl)
+      : null;
+
+    const absoluteFilePath = fileName
+      ? path.join(uploadDir, fileName)
+      : null;
 
     if (absoluteFilePath && fs.existsSync(absoluteFilePath)) {
-      fs.unlinkSync(absoluteFilePath);
+      try {
+        fs.unlinkSync(absoluteFilePath);
+      } catch (fileError) {
+        console.warn("File delete warning:", fileError.message);
+      }
+    } else {
+      console.warn("File already missing, deleting DB record only:", fileName);
     }
 
     await prisma.document.delete({
       where: { id: existingDocument.id },
     });
 
-    return res.json({ message: "Document deleted successfully" });
+    return res.json({
+      success: true,
+      message: "Document deleted successfully",
+    });
   } catch (error) {
     console.error("Error deleting document:", error);
-    return res.status(500).json({ error: "Failed to delete document" });
+    return res.status(500).json({
+      error: error.message || "Failed to delete document",
+    });
   }
 });
 
