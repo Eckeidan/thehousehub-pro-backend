@@ -60,7 +60,28 @@ app.options(/.*/, cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+const uploadsPath = path.join(__dirname, "uploads");
+
+app.use(
+  "/uploads",
+  express.static(uploadsPath, {
+    fallthrough: false,
+    setHeaders(res, filePath) {
+      if (filePath.endsWith(".docx")) {
+        res.setHeader(
+          "Content-Type",
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        );
+      }
+
+      if (filePath.endsWith(".pdf")) {
+        res.setHeader("Content-Type", "application/pdf");
+      }
+    },
+  })
+);
+
+console.log("Uploads served from:", uploadsPath);
 
 app.get("/", (req, res) => {
   res.send("PropertyOS API is running");
