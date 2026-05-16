@@ -9,7 +9,8 @@ const { createNotification } = require("../utils/createNotification");
 const router = express.Router();
 
 router.use(requireAuth);
-router.use(requireRole("ADMIN", "OWNER"));
+
+
 
 function getOrganizationId(req) {
   return req.user?.organizationId || null;
@@ -82,8 +83,32 @@ router.get("/", async (req, res) => {
     const organizationId = requireOrg(req, res);
     if (!organizationId) return;
 
+    const role = String(req.user?.role || "").toUpperCase();
+    const tenantId = req.user?.tenantId || null;
+
+    let where = { organizationId };
+
+    if (role === "TENANT") {
+      if (!tenantId) {
+        return res.status(403).json({ error: "Tenant profile is required" });
+      }
+
+      where = {
+        organizationId,
+        accessibleToTenant: true,
+        OR: [
+          { tenantId },
+          { tenantId: null },
+        ],
+      };
+    }
+
+    if (role !== "TENANT" && role !== "ADMIN" && role !== "OWNER") {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
     const documents = await prisma.document.findMany({
-      where: { organizationId },
+      where,
       include: {
         property: true,
         tenant: true,
@@ -129,7 +154,11 @@ router.get("/:id", async (req, res) => {
 });
 
 /* POST /api/documents */
-router.post("/", upload.single("file"), async (req, res) => {
+router.post(
+  "/",
+  requireRole("ADMIN", "OWNER"),
+  upload.single("file"),
+  async (req, res) => {
   try {
     const organizationId = requireOrg(req, res);
     if (!organizationId) return;
@@ -285,7 +314,10 @@ router.get("/:id/download", async (req, res) => {
 });
 
 /* DELETE /api/documents/:id */
-router.delete("/:id", async (req, res) => {
+router.delete(
+  "/:id",
+  requireRole("ADMIN", "OWNER"),
+  async (req, res) => {
   try {
     const organizationId = requireOrg(req, res);
     if (!organizationId) return;
