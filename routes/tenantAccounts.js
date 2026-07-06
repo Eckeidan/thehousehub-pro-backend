@@ -1,15 +1,38 @@
 const express = require("express");
 const bcrypt = require("bcryptjs");
 const prisma = require("../lib/prisma");
+const { requireAuth, requireRole } = require("../middleware/auth");
 
 const router = express.Router();
+
+function getOrganizationId(req) {
+  return req.user?.organizationId || null;
+}
+
+function requireOrg(req, res) {
+  const organizationId = getOrganizationId(req);
+
+  if (!organizationId) {
+    res.status(403).json({ error: "Organization is required" });
+    return null;
+  }
+
+  return organizationId;
+}
 
 /**
  * POST /api/tenants/:id/create-account
  * Create login account for a tenant
  */
-router.post("/:id/create-account", async (req, res) => {
+router.post(
+  "/:id/create-account",
+  requireAuth,
+  requireRole("ADMIN", "OWNER"),
+  async (req, res) => {
   try {
+    const organizationId = requireOrg(req, res);
+    if (!organizationId) return;
+
     const { id } = req.params;
     const { email, password, fullName } = req.body;
 
@@ -19,14 +42,14 @@ router.post("/:id/create-account", async (req, res) => {
       });
     }
 
-    if (String(password).length < 6) {
+    if (String(password).length < 8) {
       return res.status(400).json({
-        error: "Password must be at least 6 characters.",
+        error: "Password must be at least 8 characters.",
       });
     }
 
-    const tenant = await prisma.tenant.findUnique({
-      where: { id },
+    const tenant = await prisma.tenant.findFirst({
+      where: { id, organizationId },
       include: { user: true },
     });
 
@@ -66,6 +89,7 @@ router.post("/:id/create-account", async (req, res) => {
         passwordHash,
         role: "TENANT",
         tenantId: tenant.id,
+        organizationId,
         isActive: true,
       },
     });

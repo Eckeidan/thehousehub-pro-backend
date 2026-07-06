@@ -2,12 +2,35 @@ const express = require("express");
 const prisma = require("../lib/prisma");
 
 const { createNotification } = require("../utils/createNotification");
+const { requireAuth, requireRole } = require("../middleware/auth");
 const router = express.Router();
+
+router.use(requireAuth);
+router.use(requireRole("ADMIN", "OWNER"));
+
+function getOrganizationId(req) {
+  return req.user?.organizationId || null;
+}
+
+function requireOrg(req, res) {
+  const organizationId = getOrganizationId(req);
+
+  if (!organizationId) {
+    res.status(403).json({ error: "Organization is required" });
+    return null;
+  }
+
+  return organizationId;
+}
 
 /* GET all leases */
 router.get("/", async (req, res) => {
   try {
+    const organizationId = requireOrg(req, res);
+    if (!organizationId) return;
+
     const leases = await prisma.lease.findMany({
+      where: { organizationId },
       include: {
         tenant: true,
         unit: true,
@@ -33,8 +56,11 @@ router.get("/", async (req, res) => {
 /* GET single lease */
 router.get("/:id", async (req, res) => {
   try {
-    const lease = await prisma.lease.findUnique({
-      where: { id: req.params.id },
+    const organizationId = requireOrg(req, res);
+    if (!organizationId) return;
+
+    const lease = await prisma.lease.findFirst({
+      where: { id: req.params.id, organizationId },
       include: {
         tenant: true,
         unit: true,
@@ -61,6 +87,9 @@ router.get("/:id", async (req, res) => {
 /* CREATE lease */
 router.post("/", async (req, res) => {
   try {
+    const organizationId = requireOrg(req, res);
+    if (!organizationId) return;
+
     const {
       tenantId,
       unitId,
@@ -80,24 +109,24 @@ router.post("/", async (req, res) => {
       });
     }
 
-    const tenant = await prisma.tenant.findUnique({
-      where: { id: tenantId },
+    const tenant = await prisma.tenant.findFirst({
+      where: { id: tenantId, organizationId },
     });
 
     if (!tenant) {
       return res.status(404).json({ error: "Tenant not found" });
     }
 
-    const unit = await prisma.unit.findUnique({
-      where: { id: unitId },
+    const unit = await prisma.unit.findFirst({
+      where: { id: unitId, organizationId },
     });
 
     if (!unit) {
       return res.status(404).json({ error: "Unit not found" });
     }
 
-    const property = await prisma.property.findUnique({
-      where: { id: propertyId },
+    const property = await prisma.property.findFirst({
+      where: { id: propertyId, organizationId },
     });
 
     if (!property) {
@@ -107,6 +136,7 @@ router.post("/", async (req, res) => {
     const existingActiveLease = await prisma.lease.findFirst({
       where: {
         unitId,
+        organizationId,
         status: "ACTIVE",
       },
     });
@@ -122,6 +152,7 @@ router.post("/", async (req, res) => {
         tenantId,
         unitId,
         propertyId,
+        organizationId,
         rentAmount: Number(rentAmount),
         depositAmount: depositAmount ? Number(depositAmount) : 0,
         startDate: new Date(startDate),
@@ -138,6 +169,16 @@ router.post("/", async (req, res) => {
       },
     });
 
+    if (lease.tenantId) {
+      await createNotification({
+        tenantId: lease.tenantId,
+        title: "Lease activated",
+        message: "Your lease has been activated successfully.",
+        type: "SUCCESS",
+        category: "LEASE",
+      });
+    }
+
     res.status(201).json(lease);
   } catch (error) {
     console.error("Error creating lease:", error);
@@ -145,20 +186,14 @@ router.post("/", async (req, res) => {
   }
 
 
-  if (lease.tenantId) {
-  await createNotification({
-    tenantId: lease.tenantId,
-    title: "Lease activated",
-    message: `Your lease has been activated successfully.`,
-    type: "SUCCESS",
-    category: "LEASE",
-  });
-}
 });
 
 /* UPDATE lease */
 router.put("/:id", async (req, res) => {
   try {
+    const organizationId = requireOrg(req, res);
+    if (!organizationId) return;
+
     const {
       tenantId,
       unitId,
@@ -172,18 +207,52 @@ router.put("/:id", async (req, res) => {
       notes,
     } = req.body;
 
-    const existingLease = await prisma.lease.findUnique({
-      where: { id: req.params.id },
+    const existingLease = await prisma.lease.findFirst({
+      where: { id: req.params.id, organizationId },
     });
 
     if (!existingLease) {
       return res.status(404).json({ error: "Lease not found" });
     }
 
+    if (tenantId) {
+      const tenant = await prisma.tenant.findFirst({
+        where: { id: tenantId, organizationId },
+        select: { id: true },
+      });
+
+      if (!tenant) {
+        return res.status(404).json({ error: "Tenant not found" });
+      }
+    }
+
+    if (unitId) {
+      const unit = await prisma.unit.findFirst({
+        where: { id: unitId, organizationId },
+        select: { id: true },
+      });
+
+      if (!unit) {
+        return res.status(404).json({ error: "Unit not found" });
+      }
+    }
+
+    if (propertyId) {
+      const property = await prisma.property.findFirst({
+        where: { id: propertyId, organizationId },
+        select: { id: true },
+      });
+
+      if (!property) {
+        return res.status(404).json({ error: "Property not found" });
+      }
+    }
+
     if (unitId && status === "ACTIVE") {
       const anotherActiveLease = await prisma.lease.findFirst({
         where: {
           unitId,
+          organizationId,
           status: "ACTIVE",
           NOT: {
             id: req.params.id,
@@ -237,8 +306,11 @@ router.put("/:id", async (req, res) => {
 /* DELETE lease */
 router.delete("/:id", async (req, res) => {
   try {
-    const existingLease = await prisma.lease.findUnique({
-      where: { id: req.params.id },
+    const organizationId = requireOrg(req, res);
+    if (!organizationId) return;
+
+    const existingLease = await prisma.lease.findFirst({
+      where: { id: req.params.id, organizationId },
     });
 
     if (!existingLease) {

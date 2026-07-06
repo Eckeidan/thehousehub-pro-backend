@@ -2,12 +2,17 @@
   "name": "backend",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "server.js",
   "scripts": {
     "dev": "node server.js",
+    "start": "node server.js",
+    "build": "prisma generate",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate deploy",
+    "prisma:seed": "prisma db seed",
     "reset:data": "node scripts/resetData.js",
     "reset:raw": "node scripts/resetDataRaw.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --check server.js"
   },
   "keywords": [],
   "author": "",

@@ -78,6 +78,21 @@ function resolveLeaseMonthlyRent(lease) {
   return found !== undefined ? Number(found) : null;
 }
 
+function getOrganizationId(req) {
+  return req.user?.organizationId || null;
+}
+
+function requireOrg(req, res) {
+  const organizationId = getOrganizationId(req);
+
+  if (!organizationId) {
+    res.status(403).json({ error: "Organization is required" });
+    return null;
+  }
+
+  return organizationId;
+}
+
 async function getMonthlyPaidTotal(leaseId, paymentDate, excludePaymentId = null) {
   const { start, end } = getMonthRange(paymentDate);
 
@@ -112,9 +127,9 @@ async function getMonthlyPaidTotal(leaseId, paymentDate, excludePaymentId = null
   }, 0);
 }
 
-async function findActiveLeaseForTenant(tenantId) {
+async function findActiveLeaseForTenant(tenantId, organizationId) {
   const leases = await prisma.lease.findMany({
-    where: { tenantId },
+    where: { tenantId, organizationId },
     include: {
       tenant: true,
       unit: true,
@@ -176,8 +191,9 @@ async function getTenantEmail(tenant) {
   return email || null;
 }
 
-async function getAppSettings() {
+async function getAppSettings(organizationId = null) {
   return prisma.appSetting.findFirst({
+    where: organizationId ? { organizationId } : undefined,
     orderBy: { createdAt: "asc" },
   });
 }
@@ -349,6 +365,8 @@ async function sendNewPaymentToAdminEmail({ tenant, payment }) {
 router.get("/tenant-history", requireAuth, requireRole("TENANT"), async (req, res) => {
   try {
     const userId = req.user?.userId || req.user?.id || req.user?.sub;
+    const organizationId = requireOrg(req, res);
+    if (!organizationId) return;
 
     if (!userId) {
       return res.status(401).json({ error: "Unauthorized" });
@@ -365,6 +383,7 @@ router.get("/tenant-history", requireAuth, requireRole("TENANT"), async (req, re
 
     const payments = await prisma.payment.findMany({
       where: {
+        organizationId,
         lease: {
           tenantId: user.tenant.id,
         },
@@ -394,7 +413,23 @@ router.get("/tenant-history", requireAuth, requireRole("TENANT"), async (req, re
 
 router.get("/", requireAuth, async (req, res) => {
   try {
+    const organizationId = requireOrg(req, res);
+    if (!organizationId) return;
+
+    const role = String(req.user?.role || "").toUpperCase();
+    const tenantId = req.user?.tenantId || null;
+
+    const where =
+      role === "TENANT"
+        ? { organizationId, lease: { tenantId } }
+        : { organizationId };
+
+    if (role === "TENANT" && !tenantId) {
+      return res.status(403).json({ error: "Tenant profile is required" });
+    }
+
     const payments = await prisma.payment.findMany({
+      where,
       include: {
         lease: {
           include: {
@@ -421,6 +456,8 @@ router.get("/", requireAuth, async (req, res) => {
 router.get("/tenant-summary", requireAuth, requireRole("TENANT"), async (req, res) => {
   try {
     const userId = req.user?.userId || req.user?.id || req.user?.sub;
+    const organizationId = requireOrg(req, res);
+    if (!organizationId) return;
 
     if (!userId) {
       return res.status(401).json({ error: "Unauthorized" });
@@ -450,7 +487,7 @@ router.get("/tenant-summary", requireAuth, requireRole("TENANT"), async (req, re
       });
     }
 
-    const lease = await findActiveLeaseForTenant(tenantId);
+    const lease = await findActiveLeaseForTenant(tenantId, organizationId);
 
     if (!lease) {
       return res.json({
@@ -477,8 +514,22 @@ router.get("/tenant-summary", requireAuth, requireRole("TENANT"), async (req, re
 
 router.get("/:id", requireAuth, async (req, res) => {
   try {
-    const payment = await prisma.payment.findUnique({
-      where: { id: req.params.id },
+    const organizationId = requireOrg(req, res);
+    if (!organizationId) return;
+
+    const role = String(req.user?.role || "").toUpperCase();
+    const tenantId = req.user?.tenantId || null;
+    const where =
+      role === "TENANT"
+        ? { id: req.params.id, organizationId, lease: { tenantId } }
+        : { id: req.params.id, organizationId };
+
+    if (role === "TENANT" && !tenantId) {
+      return res.status(403).json({ error: "Tenant profile is required" });
+    }
+
+    const payment = await prisma.payment.findFirst({
+      where,
       include: {
         lease: {
           include: {
@@ -507,6 +558,9 @@ router.get("/:id", requireAuth, async (req, res) => {
 
 router.post("/", requireAuth, requireRole("ADMIN", "OWNER"), async (req, res) => {
   try {
+    const organizationId = requireOrg(req, res);
+    if (!organizationId) return;
+
     const {
       leaseId,
       amount,
@@ -534,8 +588,8 @@ router.post("/", requireAuth, requireRole("ADMIN", "OWNER"), async (req, res) =>
       return res.status(400).json({ error: "Invalid payment date" });
     }
 
-    const lease = await prisma.lease.findUnique({
-      where: { id: leaseId },
+    const lease = await prisma.lease.findFirst({
+      where: { id: leaseId, organizationId },
       include: {
         tenant: true,
         unit: true,
@@ -569,6 +623,7 @@ router.post("/", requireAuth, requireRole("ADMIN", "OWNER"), async (req, res) =>
     const payment = await prisma.payment.create({
       data: {
         leaseId,
+        organizationId,
         amount: parsedAmount,
         paymentDate: parsedDate,
         paymentMethod: paymentMethod || "CASH",
@@ -616,6 +671,8 @@ router.post(
   async (req, res) => {
     try {
       const userId = req.user?.id || req.user?.userId || req.user?.sub;
+      const organizationId = requireOrg(req, res);
+      if (!organizationId) return;
       const { amount, paymentMethod, reference, notes, paymentDate } = req.body;
 
       const parsedAmount = Number(amount);
@@ -635,8 +692,8 @@ router.post(
         return res.status(400).json({ error: "Invalid payment date" });
       }
 
-      const user = await prisma.user.findUnique({
-        where: { id: userId },
+      const user = await prisma.user.findFirst({
+        where: { id: userId, organizationId },
         include: {
           tenant: {
             include: {
@@ -659,7 +716,7 @@ router.post(
         });
       }
 
-      const lease = await findActiveLeaseForTenant(tenantId);
+      const lease = await findActiveLeaseForTenant(tenantId, organizationId);
 
       if (!lease) {
         return res.status(404).json({
@@ -711,6 +768,7 @@ router.post(
       const createdPayment = await prisma.payment.create({
         data: {
           leaseId: lease.id,
+          organizationId,
           amount: parsedAmount,
           paymentDate: parsedDate,
           paymentMethod: normalizedMethod,
@@ -740,10 +798,6 @@ router.post(
           type: "INFO",
           category: "PAYMENT",
         });
-
-        console.log("CALLING ADMIN PAYMENT EMAIL...");
-        console.log("TENANT FOR ADMIN EMAIL:", createdPayment.lease.tenant);
-        console.log("PAYMENT FOR ADMIN EMAIL:", createdPayment.id);
 
         await sendNewPaymentToAdminEmail({
           tenant: createdPayment.lease.tenant,
@@ -786,8 +840,11 @@ router.post(
 
 router.put("/:id", requireAuth, requireRole("ADMIN", "OWNER"), async (req, res) => {
   try {
-    const existingPayment = await prisma.payment.findUnique({
-      where: { id: req.params.id },
+    const organizationId = requireOrg(req, res);
+    if (!organizationId) return;
+
+    const existingPayment = await prisma.payment.findFirst({
+      where: { id: req.params.id, organizationId },
       include: {
         lease: {
           include: {
@@ -806,12 +863,40 @@ router.put("/:id", requireAuth, requireRole("ADMIN", "OWNER"), async (req, res) 
     const nextStatus = req.body?.status
       ? String(req.body.status).toUpperCase()
       : existingPayment.status;
+    const nextLeaseId = req.body?.leaseId || existingPayment.leaseId;
+
+    if (nextLeaseId !== existingPayment.leaseId) {
+      const lease = await prisma.lease.findFirst({
+        where: { id: nextLeaseId, organizationId },
+        select: { id: true },
+      });
+
+      if (!lease) {
+        return res.status(404).json({ error: "Lease not found" });
+      }
+    }
 
     const updatedPayment = await prisma.payment.update({
       where: { id: req.params.id },
       data: {
-        ...req.body,
+        leaseId: nextLeaseId,
+        amount:
+          req.body?.amount !== undefined
+            ? Number(req.body.amount)
+            : existingPayment.amount,
+        paymentDate: req.body?.paymentDate
+          ? new Date(req.body.paymentDate)
+          : existingPayment.paymentDate,
+        paymentMethod: req.body?.paymentMethod || existingPayment.paymentMethod,
         status: nextStatus,
+        reference:
+          req.body?.reference !== undefined
+            ? req.body.reference
+            : existingPayment.reference,
+        notes:
+          req.body?.notes !== undefined
+            ? req.body.notes
+            : existingPayment.notes,
       },
       include: {
         lease: {
@@ -836,8 +921,6 @@ router.put("/:id", requireAuth, requireRole("ADMIN", "OWNER"), async (req, res) 
           type: "SUCCESS",
           category: "PAYMENT",
         });
-
-        console.log("CALLING TENANT PAYMENT APPROVAL EMAIL...");
 
         await sendPaymentApprovedEmail({
           tenant: updatedPayment.lease.tenant,
@@ -869,8 +952,11 @@ router.put("/:id", requireAuth, requireRole("ADMIN", "OWNER"), async (req, res) 
 
 router.delete("/:id", requireAuth, requireRole("ADMIN"), async (req, res) => {
   try {
-    const payment = await prisma.payment.findUnique({
-      where: { id: req.params.id },
+    const organizationId = requireOrg(req, res);
+    if (!organizationId) return;
+
+    const payment = await prisma.payment.findFirst({
+      where: { id: req.params.id, organizationId },
     });
 
     if (!payment) {

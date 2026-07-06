@@ -5,10 +5,29 @@ const { requireAuth, requireOwner } = require("../middleware/auth");
 
 const router = express.Router();
 
+function getOrganizationId(req) {
+  return req.user?.organizationId || null;
+}
+
+function requireOrg(req, res) {
+  const organizationId = getOrganizationId(req);
+
+  if (!organizationId) {
+    res.status(403).json({ error: "Organization is required" });
+    return null;
+  }
+
+  return organizationId;
+}
+
 /* GET all users - OWNER only */
 router.get("/", requireAuth, requireOwner, async (req, res) => {
   try {
+    const organizationId = requireOrg(req, res);
+    if (!organizationId) return;
+
     const users = await prisma.user.findMany({
+      where: { organizationId },
       orderBy: {
         createdAt: "desc",
       },
@@ -32,6 +51,9 @@ router.get("/", requireAuth, requireOwner, async (req, res) => {
 /* CREATE ADMIN or OWNER - OWNER only */
 router.post("/", requireAuth, requireOwner, async (req, res) => {
   try {
+    const organizationId = requireOrg(req, res);
+    if (!organizationId) return;
+
     const { fullName, email, password, role } = req.body;
 
     if (!fullName || !email || !password || !role) {
@@ -68,6 +90,7 @@ router.post("/", requireAuth, requireOwner, async (req, res) => {
         email: email.toLowerCase().trim(),
         passwordHash: hashedPassword,
         role: normalizedRole,
+        organizationId,
         isActive: true,
       },
       select: {

@@ -3,8 +3,26 @@ const path = require("path");
 const fs = require("fs");
 const multer = require("multer");
 const prisma = require("../lib/prisma");
+const { requireAuth, requireRole } = require("../middleware/auth");
 
 const router = express.Router();
+router.use(requireAuth);
+router.use(requireRole("ADMIN", "OWNER"));
+
+function getOrganizationId(req) {
+  return req.user?.organizationId || null;
+}
+
+function requireOrg(req, res) {
+  const organizationId = getOrganizationId(req);
+
+  if (!organizationId) {
+    res.status(403).json({ error: "Organization is required" });
+    return null;
+  }
+
+  return organizationId;
+}
 
 const uploadDir = path.join(__dirname, "..", "uploads", "properties");
 fs.mkdirSync(uploadDir, { recursive: true });
@@ -27,7 +45,7 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage,
-  limits: { fileSize: 30 * 2024 * 2024 },
+  limits: { fileSize: 30 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     const allowed = ["image/jpeg", "image/png", "image/webp"];
     if (!allowed.includes(file.mimetype)) {
@@ -40,8 +58,20 @@ const upload = multer({
 /* GET all images for a property */
 router.get("/property/:propertyId", async (req, res) => {
   try {
+    const organizationId = requireOrg(req, res);
+    if (!organizationId) return;
+
+    const property = await prisma.property.findFirst({
+      where: { id: req.params.propertyId, organizationId },
+      select: { id: true },
+    });
+
+    if (!property) {
+      return res.status(404).json({ error: "Property not found" });
+    }
+
     const images = await prisma.propertyImage.findMany({
-      where: { propertyId: req.params.propertyId },
+      where: { propertyId: property.id },
       orderBy: [
         { isPrimary: "desc" },
         { sortOrder: "asc" },
@@ -60,9 +90,11 @@ router.get("/property/:propertyId", async (req, res) => {
 router.post("/property/:propertyId", upload.array("images", 10), async (req, res) => {
   try {
     const { propertyId } = req.params;
+    const organizationId = requireOrg(req, res);
+    if (!organizationId) return;
 
-    const property = await prisma.property.findUnique({
-      where: { id: propertyId },
+    const property = await prisma.property.findFirst({
+      where: { id: propertyId, organizationId },
       include: { propertyImages: true },
     });
 
@@ -101,8 +133,14 @@ router.post("/property/:propertyId", upload.array("images", 10), async (req, res
 /* SET primary image */
 router.put("/:imageId/primary", async (req, res) => {
   try {
-    const image = await prisma.propertyImage.findUnique({
-      where: { id: req.params.imageId },
+    const organizationId = requireOrg(req, res);
+    if (!organizationId) return;
+
+    const image = await prisma.propertyImage.findFirst({
+      where: {
+        id: req.params.imageId,
+        property: { organizationId },
+      },
     });
 
     if (!image) {
@@ -129,8 +167,14 @@ router.put("/:imageId/primary", async (req, res) => {
 /* DELETE image */
 router.delete("/:imageId", async (req, res) => {
   try {
-    const image = await prisma.propertyImage.findUnique({
-      where: { id: req.params.imageId },
+    const organizationId = requireOrg(req, res);
+    if (!organizationId) return;
+
+    const image = await prisma.propertyImage.findFirst({
+      where: {
+        id: req.params.imageId,
+        property: { organizationId },
+      },
     });
 
     if (!image) {

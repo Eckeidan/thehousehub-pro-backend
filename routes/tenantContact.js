@@ -4,16 +4,33 @@ const router = express.Router();
 const prisma = require("../lib/prisma");
 const { requireAuth, requireRole } = require("../middleware/auth");
 
+function getOrganizationId(req) {
+  return req.user?.organizationId || null;
+}
+
+function requireOrg(req, res) {
+  const organizationId = getOrganizationId(req);
+
+  if (!organizationId) {
+    res.status(403).json({ error: "Organization is required" });
+    return null;
+  }
+
+  return organizationId;
+}
+
 router.get("/", requireAuth, requireRole("TENANT"), async (req, res) => {
   try {
     const tenantId = req.user?.tenantId;
+    const organizationId = requireOrg(req, res);
+    if (!organizationId) return;
 
     if (!tenantId) {
       return res.status(400).json({ error: "Tenant not linked to user" });
     }
 
-    const tenant = await prisma.tenant.findUnique({
-      where: { id: tenantId },
+    const tenant = await prisma.tenant.findFirst({
+      where: { id: tenantId, organizationId },
       include: {
         property: true,
         unit: true,
@@ -25,8 +42,8 @@ router.get("/", requireAuth, requireRole("TENANT"), async (req, res) => {
     }
 
     const setting =
-      (await prisma.setting.findFirst()) ||
-      (await prisma.appSetting.findFirst());
+      (await prisma.appSetting.findFirst({ where: { organizationId } })) ||
+      (await prisma.setting.findFirst());
 
     return res.json({
       ok: true,
@@ -55,6 +72,8 @@ router.post("/", requireAuth, requireRole("TENANT"), async (req, res) => {
   try {
     const { subject, message } = req.body;
     const tenantId = req.user?.tenantId;
+    const organizationId = requireOrg(req, res);
+    if (!organizationId) return;
 
     if (!tenantId) {
       return res.status(400).json({ error: "Tenant not linked to user" });
@@ -66,8 +85,8 @@ router.post("/", requireAuth, requireRole("TENANT"), async (req, res) => {
       });
     }
 
-    const tenant = await prisma.tenant.findUnique({
-      where: { id: tenantId },
+    const tenant = await prisma.tenant.findFirst({
+      where: { id: tenantId, organizationId },
       include: {
         property: true,
         unit: true,

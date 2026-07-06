@@ -79,7 +79,7 @@ router.post("/login", async (req, res) => {
         tenantId: user.tenantId || null,
         organizationId: user.organizationId || null,
       },
-      process.env.JWT_SECRET || "propertyos_dev_secret",
+      process.env.JWT_SECRET,
       { expiresIn: "7d" }
     );
 
