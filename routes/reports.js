@@ -60,6 +60,32 @@ function createTransporter() {
   });
 }
 
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function formatCurrency(value) {
+  return `$${toNumber(value).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+function resolvePublicUrl(value) {
+  if (!value) return "";
+  if (String(value).startsWith("http")) return value;
+  const publicBase =
+    process.env.PUBLIC_APP_URL ||
+    process.env.FRONTEND_URL ||
+    "https://thehousehub.app";
+  return `${publicBase}${String(value).startsWith("/") ? "" : "/"}${value}`;
+}
+
 function getNextRunAt(frequency, from = new Date()) {
   const next = new Date(from);
   const normalized = String(frequency || "WEEKLY").toUpperCase();
@@ -329,44 +355,112 @@ async function buildReportForOrganization(organizationId, query = {}) {
 }
 
 function renderReportHtml(report) {
-  const company = report.settings?.companyName || report.organization?.name || "The House Hub";
+  const company = escapeHtml(
+    report.settings?.companyName || report.organization?.companyName || report.organization?.name || "The House Hub"
+  );
+  const organizationEmail = escapeHtml(report.settings?.email || report.organization?.email || "");
+  const supportEmail = escapeHtml(report.settings?.supportEmail || organizationEmail);
+  const logoUrl = resolvePublicUrl(report.settings?.logoUrl);
+  const generatedAt = new Date(report.generatedAt).toLocaleString();
+  const from = new Date(report.filters?.from).toLocaleDateString();
+  const to = new Date(report.filters?.to).toLocaleDateString();
+  const propertyRows = report.tables.properties
+    .slice(0, 12)
+    .map(
+      (property) => `
+        <tr>
+          <td>${escapeHtml(property.name || property.code || "N/A")}</td>
+          <td>${escapeHtml([property.city, property.state].filter(Boolean).join(", ") || "N/A")}</td>
+          <td>${escapeHtml(property.tenants)}</td>
+          <td>${formatCurrency(property.monthlyRent)}</td>
+          <td>${formatCurrency(property.paid)}</td>
+        </tr>`
+    )
+    .join("");
   const rows = report.tables.payments
     .slice(0, 25)
     .map(
       (payment) => `
         <tr>
           <td>${new Date(payment.date).toLocaleDateString()}</td>
-          <td>${payment.tenant || "N/A"}</td>
-          <td>${payment.property || "N/A"}</td>
-          <td>$${payment.amount.toFixed(2)}</td>
-          <td>${payment.status}</td>
+          <td>${escapeHtml(payment.tenant || "N/A")}</td>
+          <td>${escapeHtml(payment.property || "N/A")}</td>
+          <td>${formatCurrency(payment.amount)}</td>
+          <td><span class="status">${escapeHtml(payment.status)}</span></td>
         </tr>`
     )
     .join("");
 
   return `
-  <div style="font-family:Arial,sans-serif;background:#f8fafc;padding:24px;">
-    <div style="max-width:760px;margin:auto;background:white;border-radius:18px;overflow:hidden;border:1px solid #e2e8f0;">
-      <div style="background:#0f172a;color:white;padding:24px;">
-        <p style="margin:0;color:#93c5fd;font-weight:bold;letter-spacing:.08em;">PORTFOLIO REPORT</p>
-        <h1 style="margin:8px 0 0;font-size:28px;">${company}</h1>
-        <p style="margin:8px 0 0;color:#cbd5e1;">Generated ${new Date(report.generatedAt).toLocaleString()}</p>
+  <div style="font-family:Arial,sans-serif;background:#eef3f8;padding:24px;color:#0f172a;">
+    <div style="max-width:860px;margin:auto;background:white;border-radius:22px;overflow:hidden;border:1px solid #dbe4ef;box-shadow:0 18px 45px rgba(15,23,42,0.10);">
+      <div style="background:#0f172a;color:white;padding:28px;">
+        <table style="width:100%;border-collapse:collapse;">
+          <tr>
+            <td style="vertical-align:middle;">
+              ${
+                logoUrl
+                  ? `<img src="${escapeHtml(logoUrl)}" alt="${company} logo" style="height:52px;max-width:180px;object-fit:contain;background:white;border-radius:14px;padding:8px;margin-bottom:16px;">`
+                  : `<div style="height:52px;width:52px;border-radius:16px;background:#2563eb;display:inline-flex;align-items:center;justify-content:center;font-weight:800;font-size:18px;margin-bottom:16px;">HH</div>`
+              }
+              <p style="margin:0;color:#93c5fd;font-size:12px;font-weight:bold;letter-spacing:.12em;">LANDLORD PORTFOLIO REPORT</p>
+              <h1 style="margin:8px 0 0;font-size:30px;line-height:1.1;">${company}</h1>
+              <p style="margin:10px 0 0;color:#cbd5e1;font-size:14px;">Reporting period: ${from} - ${to}</p>
+            </td>
+            <td style="vertical-align:top;text-align:right;color:#cbd5e1;font-size:13px;">
+              <strong style="color:white;">Generated</strong><br>${escapeHtml(generatedAt)}<br><br>
+              ${organizationEmail ? `<strong style="color:white;">Email</strong><br>${organizationEmail}<br><br>` : ""}
+              ${supportEmail ? `<strong style="color:white;">Support</strong><br>${supportEmail}` : ""}
+            </td>
+          </tr>
+        </table>
       </div>
-      <div style="padding:24px;">
-        <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px;">
-          <div style="background:#f1f5f9;padding:16px;border-radius:12px;"><strong>Revenue</strong><br/>$${report.summary.totalRevenue.toFixed(2)}</div>
-          <div style="background:#f1f5f9;padding:16px;border-radius:12px;"><strong>Occupancy</strong><br/>${report.summary.occupancyRate}%</div>
-          <div style="background:#f1f5f9;padding:16px;border-radius:12px;"><strong>Properties</strong><br/>${report.summary.properties}</div>
-          <div style="background:#f1f5f9;padding:16px;border-radius:12px;"><strong>Tenants</strong><br/>${report.summary.tenants}</div>
+
+      <div style="padding:28px;">
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;">
+          <div class="metric"><span>Approved Revenue</span><strong>${formatCurrency(report.summary.totalRevenue)}</strong></div>
+          <div class="metric"><span>Pending Revenue</span><strong>${formatCurrency(report.summary.pendingRevenue)}</strong></div>
+          <div class="metric"><span>Occupancy</span><strong>${report.summary.occupancyRate}%</strong></div>
+          <div class="metric"><span>Open Maintenance</span><strong>${report.summary.maintenanceOpen}</strong></div>
         </div>
-        <h2 style="margin-top:28px;">Recent Payments</h2>
-        <table style="width:100%;border-collapse:collapse;font-size:14px;">
-          <thead><tr style="text-align:left;color:#64748b;"><th>Date</th><th>Tenant</th><th>Property</th><th>Amount</th><th>Status</th></tr></thead>
+
+        <div style="margin-top:28px;padding:20px;border-radius:18px;background:#f8fafc;border:1px solid #e2e8f0;">
+          <h2 style="margin:0 0 8px;font-size:20px;">Executive Summary</h2>
+          <p style="margin:0;color:#475569;line-height:1.6;font-size:14px;">
+            The portfolio has ${report.summary.properties} active properties and ${report.summary.tenants} active tenants.
+            ${formatCurrency(report.summary.pendingRevenue)} is pending administrative approval.
+            ${report.summary.maintenanceOpen} maintenance request(s) require attention.
+          </p>
+        </div>
+
+        <h2>Property Performance</h2>
+        <table>
+          <thead><tr><th>Property</th><th>Market</th><th>Tenants</th><th>Monthly Rent</th><th>Collected</th></tr></thead>
+          <tbody>${propertyRows || `<tr><td colspan="5">No properties found.</td></tr>`}</tbody>
+        </table>
+
+        <h2>Recent Payments</h2>
+        <table>
+          <thead><tr><th>Date</th><th>Tenant</th><th>Property</th><th>Amount</th><th>Status</th></tr></thead>
           <tbody>${rows || `<tr><td colspan="5">No payments found.</td></tr>`}</tbody>
         </table>
       </div>
+
+      <div style="background:#f8fafc;border-top:1px solid #e2e8f0;padding:18px 28px;color:#64748b;font-size:12px;">
+        This report was generated by The House Hub. Figures are scoped to the landlord organization and current report filters.
+      </div>
     </div>
-  </div>`;
+  </div>
+  <style>
+    h2 { margin: 28px 0 12px; font-size: 20px; color: #0f172a; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { text-align: left; color: #64748b; text-transform: uppercase; letter-spacing: .05em; font-size: 11px; border-bottom: 1px solid #e2e8f0; padding: 10px 8px; }
+    td { border-bottom: 1px solid #edf2f7; padding: 12px 8px; color: #1e293b; }
+    .metric { background:#f1f5f9;border:1px solid #e2e8f0;border-radius:16px;padding:16px; }
+    .metric span { display:block;color:#64748b;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em; }
+    .metric strong { display:block;margin-top:8px;font-size:20px;color:#0f172a; }
+    .status { display:inline-block;border-radius:999px;background:#e0f2fe;color:#075985;padding:4px 8px;font-size:11px;font-weight:700; }
+  </style>`;
 }
 
 router.get("/", requireAuth, requireRole("ADMIN", "OWNER"), async (req, res) => {
