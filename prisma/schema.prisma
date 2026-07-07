@@ -485,11 +485,14 @@ model User {
   requestedLeaseChanges LeaseChangeRequest[] @relation("LeaseChangeRequestedBy")
   mustChangePassword    Boolean              @default(false)
   systemAuditLogs       SystemAuditLog[]     @relation("SystemAuditActor")
+  platformAccessAll     Boolean              @default(false)
+  platformPermissions   String[]             @default([])
 
   @@index([email])
   @@index([role])
   @@index([isActive])
   @@index([organizationId])
+  @@index([platformAccessAll])
 }
 
 model SystemAuditLog {

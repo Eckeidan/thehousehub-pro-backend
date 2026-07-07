@@ -98,6 +98,8 @@ router.post("/login", async (req, res) => {
         tenantId: user.tenantId || null,
         organizationId: user.organizationId || null,
         mustChangePassword: user.mustChangePassword === true,
+        platformAccessAll: user.platformAccessAll === true,
+        platformPermissions: user.platformPermissions || [],
       },
       redirectTo: buildRedirectPath(user.role),
     });
@@ -149,6 +151,8 @@ router.get("/me", requireAuth, async (req, res) => {
         tenantId: user.tenantId || null,
         organizationId: user.organizationId || null,
         mustChangePassword: user.mustChangePassword === true,
+        platformAccessAll: user.platformAccessAll === true,
+        platformPermissions: user.platformPermissions || [],
         tenant: user.tenant || null,
       },
     });

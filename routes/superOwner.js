@@ -7,6 +7,72 @@ const router = express.Router();
 router.use(requireAuth);
 router.use(requireSuperOwner);
 
+const PLATFORM_PERMISSIONS = [
+  "platform:overview",
+  "organizations:read",
+  "properties:read",
+  "tenants:read",
+  "transactions:read",
+  "audit:read",
+  "support:read",
+  "support:suspend_user",
+  "support:reactivate_user",
+];
+
+async function getPlatformAccess(userId) {
+  if (!userId) return { accessAll: false, permissions: [] };
+
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      role: true,
+      platformAccessAll: true,
+      platformPermissions: true,
+      isActive: true,
+    },
+  });
+
+  if (!user || !user.isActive || user.role !== "SUPER_OWNER") {
+    return { accessAll: false, permissions: [] };
+  }
+
+  return {
+    accessAll: user.platformAccessAll === true,
+    permissions: Array.isArray(user.platformPermissions)
+      ? user.platformPermissions
+      : [],
+  };
+}
+
+function hasPermission(access, permission) {
+  return (
+    access.accessAll ||
+    access.permissions.includes(permission) ||
+    access.permissions.includes("*")
+  );
+}
+
+function requirePlatformPermission(permission) {
+  return async (req, res, next) => {
+    try {
+      const access = await getPlatformAccess(req.user?.userId);
+
+      if (!hasPermission(access, permission)) {
+        return res.status(403).json({
+          error: "Forbidden",
+          requiredPermission: permission,
+        });
+      }
+
+      req.platformAccess = access;
+      next();
+    } catch (error) {
+      console.error("Platform permission error:", error);
+      return res.status(500).json({ error: "Failed to verify permissions" });
+    }
+  };
+}
+
 function toNumber(value) {
   if (value === null || value === undefined) return 0;
   return Number(value) || 0;
@@ -39,7 +105,22 @@ function assertSameOrganization(record, organizationId) {
   return record && record.organizationId === organizationId;
 }
 
-router.get("/overview", async (req, res) => {
+router.get("/permissions", async (req, res) => {
+  try {
+    const access = await getPlatformAccess(req.user?.userId);
+
+    res.json({
+      accessAll: access.accessAll,
+      permissions: access.accessAll ? PLATFORM_PERMISSIONS : access.permissions,
+      availablePermissions: PLATFORM_PERMISSIONS,
+    });
+  } catch (error) {
+    console.error("Super owner permissions error:", error);
+    res.status(500).json({ error: "Failed to load platform permissions" });
+  }
+});
+
+router.get("/overview", requirePlatformPermission("platform:overview"), async (req, res) => {
   try {
     const [
       organizations,
@@ -113,7 +194,7 @@ router.get("/overview", async (req, res) => {
   }
 });
 
-router.get("/organizations", async (req, res) => {
+router.get("/organizations", requirePlatformPermission("organizations:read"), async (req, res) => {
   try {
     const organizations = await prisma.organization.findMany({
       orderBy: { createdAt: "desc" },
@@ -160,7 +241,7 @@ router.get("/organizations", async (req, res) => {
   }
 });
 
-router.get("/organizations/:id", async (req, res) => {
+router.get("/organizations/:id", requirePlatformPermission("organizations:read"), async (req, res) => {
   try {
     const organization = await prisma.organization.findUnique({
       where: { id: req.params.id },
@@ -252,7 +333,7 @@ router.get("/organizations/:id", async (req, res) => {
   }
 });
 
-router.get("/transactions", async (req, res) => {
+router.get("/transactions", requirePlatformPermission("transactions:read"), async (req, res) => {
   try {
     const limit = parseLimit(req.query.limit, 100, 500);
     const organizationId = req.query.organizationId
@@ -310,7 +391,7 @@ router.get("/transactions", async (req, res) => {
   }
 });
 
-router.get("/audit", async (req, res) => {
+router.get("/audit", requirePlatformPermission("audit:read"), async (req, res) => {
   try {
     const limit = parseLimit(req.query.limit, 100, 500);
     const organizationId = req.query.organizationId
@@ -348,7 +429,7 @@ router.get("/audit", async (req, res) => {
   }
 });
 
-router.patch("/organizations/:organizationId/users/:userId/reactivate", async (req, res) => {
+router.patch("/organizations/:organizationId/users/:userId/reactivate", requirePlatformPermission("support:reactivate_user"), async (req, res) => {
   try {
     const user = await prisma.user.findUnique({
       where: { id: req.params.userId },
@@ -378,7 +459,7 @@ router.patch("/organizations/:organizationId/users/:userId/reactivate", async (r
   }
 });
 
-router.patch("/organizations/:organizationId/users/:userId/suspend", async (req, res) => {
+router.patch("/organizations/:organizationId/users/:userId/suspend", requirePlatformPermission("support:suspend_user"), async (req, res) => {
   try {
     const user = await prisma.user.findUnique({
       where: { id: req.params.userId },

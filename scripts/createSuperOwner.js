@@ -31,6 +31,8 @@ async function main() {
       organizationId: null,
       tenantId: null,
       mustChangePassword: true,
+      platformAccessAll: true,
+      platformPermissions: [],
     },
     create: {
       fullName,
@@ -41,6 +43,8 @@ async function main() {
       organizationId: null,
       tenantId: null,
       mustChangePassword: true,
+      platformAccessAll: true,
+      platformPermissions: [],
     },
     select: {
       id: true,
@@ -49,6 +53,8 @@ async function main() {
       role: true,
       isActive: true,
       mustChangePassword: true,
+      platformAccessAll: true,
+      platformPermissions: true,
     },
   });
 
