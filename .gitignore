@@ -10,3 +10,5 @@ node_modules.zip
 .env
 uploads/
 .DS_Store
+backups/
+*.dump
