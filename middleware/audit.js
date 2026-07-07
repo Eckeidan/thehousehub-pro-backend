@@ -25,6 +25,23 @@ function inferResourceId(path) {
   return candidate.length > 8 ? candidate : null;
 }
 
+function firstForwardedIp(value) {
+  if (!value) return null;
+  return String(value).split(",")[0]?.trim() || null;
+}
+
+function buildApproximateLocation(headers) {
+  const city = headers["x-vercel-ip-city"] || headers["cf-ipcity"];
+  const region = headers["x-vercel-ip-country-region"] || headers["cf-region"];
+  const country = headers["x-vercel-ip-country"] || headers["cf-ipcountry"];
+
+  return {
+    city: city ? decodeURIComponent(String(city)) : null,
+    region: region ? String(region) : null,
+    country: country ? String(country) : null,
+  };
+}
+
 function auditRequests(req, res, next) {
   const startedAt = Date.now();
 
@@ -42,6 +59,7 @@ function auditRequests(req, res, next) {
       : {
           durationMs: Date.now() - startedAt,
           query: req.query || {},
+          approximateLocation: buildApproximateLocation(req.headers),
         };
 
     prisma.systemAuditLog
@@ -57,7 +75,11 @@ function auditRequests(req, res, next) {
           method: req.method,
           path: req.originalUrl,
           statusCode: res.statusCode,
-          ipAddress: req.ip || req.headers["x-forwarded-for"] || null,
+          ipAddress:
+            firstForwardedIp(req.headers["x-forwarded-for"]) ||
+            req.ip ||
+            req.socket?.remoteAddress ||
+            null,
           userAgent: req.headers["user-agent"] || null,
           metadata,
         },

@@ -105,6 +105,78 @@ function buildDateFilter(query) {
   };
 }
 
+function parseWindowMinutes(value, fallback = 15, max = 1440) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.min(Math.floor(parsed), max);
+}
+
+function parseUserAgent(userAgent) {
+  const raw = String(userAgent || "");
+  const browser = raw.includes("Edg/")
+    ? "Microsoft Edge"
+    : raw.includes("Chrome/")
+    ? "Chrome"
+    : raw.includes("Safari/") && !raw.includes("Chrome/")
+    ? "Safari"
+    : raw.includes("Firefox/")
+    ? "Firefox"
+    : raw
+    ? "Unknown browser"
+    : "Unknown";
+
+  const os = raw.includes("Mac OS X")
+    ? "macOS"
+    : raw.includes("Windows")
+    ? "Windows"
+    : raw.includes("Android")
+    ? "Android"
+    : raw.includes("iPhone") || raw.includes("iPad")
+    ? "iOS"
+    : raw.includes("Linux")
+    ? "Linux"
+    : "Unknown";
+
+  return { browser, os };
+}
+
+function isPrivateIp(ipAddress) {
+  const ip = String(ipAddress || "");
+  return (
+    !ip ||
+    ip === "::1" ||
+    ip === "127.0.0.1" ||
+    ip.startsWith("::ffff:127.") ||
+    ip.startsWith("10.") ||
+    ip.startsWith("192.168.") ||
+    /^172\.(1[6-9]|2\d|3[0-1])\./.test(ip)
+  );
+}
+
+function approximateLocationFromAudit(log) {
+  const location = log.metadata?.approximateLocation || {};
+  const parts = [location.city, location.region, location.country].filter(Boolean);
+
+  if (parts.length > 0) {
+    return {
+      label: parts.join(", "),
+      precision: "Proxy-provided approximation",
+    };
+  }
+
+  if (isPrivateIp(log.ipAddress)) {
+    return {
+      label: "Local or private network",
+      precision: "Not publicly geolocatable",
+    };
+  }
+
+  return {
+    label: "Approximation unavailable",
+    precision: "IP captured, no geo header",
+  };
+}
+
 function assertSameOrganization(record, organizationId) {
   return record && record.organizationId === organizationId;
 }
@@ -543,6 +615,88 @@ router.get("/audit", requirePlatformPermission("audit:read"), async (req, res) =
   } catch (error) {
     console.error("Super owner audit error:", error);
     res.status(500).json({ error: "Failed to load audit log" });
+  }
+});
+
+router.get("/online-users", requirePlatformPermission("support:read"), async (req, res) => {
+  try {
+    const windowMinutes = parseWindowMinutes(req.query.windowMinutes, 15, 1440);
+    const since = new Date(Date.now() - windowMinutes * 60 * 1000);
+
+    const logs = await prisma.systemAuditLog.findMany({
+      where: {
+        actorUserId: { not: null },
+        createdAt: { gte: since },
+      },
+      include: {
+        actor: {
+          select: {
+            id: true,
+            fullName: true,
+            email: true,
+            role: true,
+            isActive: true,
+            organizationId: true,
+            organization: {
+              select: { id: true, name: true, email: true, companyName: true },
+            },
+          },
+        },
+        organization: {
+          select: { id: true, name: true, email: true, companyName: true },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+      take: 1000,
+    });
+
+    const byUser = new Map();
+
+    for (const log of logs) {
+      if (!log.actorUserId || byUser.has(log.actorUserId)) continue;
+
+      const device = parseUserAgent(log.userAgent);
+      const location = approximateLocationFromAudit(log);
+      const organization = log.actor?.organization || log.organization || null;
+
+      byUser.set(log.actorUserId, {
+        userId: log.actorUserId,
+        fullName: log.actor?.fullName || "Unknown user",
+        email: log.actor?.email || log.actorEmail || "Unknown email",
+        role: log.actor?.role || log.actorRole || "UNKNOWN",
+        isActive: log.actor?.isActive ?? true,
+        organization,
+        lastActivityAt: log.createdAt,
+        lastAction: log.action,
+        lastPath: log.path,
+        ipAddress: log.ipAddress,
+        userAgent: log.userAgent,
+        device,
+        approximateLocation: location,
+      });
+    }
+
+    const users = Array.from(byUser.values());
+    const admins = users.filter((item) =>
+      ["SUPER_OWNER", "ADMIN", "OWNER"].includes(String(item.role).toUpperCase())
+    );
+    const tenants = users.filter((item) => String(item.role).toUpperCase() === "TENANT");
+
+    res.json({
+      windowMinutes,
+      generatedAt: new Date().toISOString(),
+      stats: {
+        onlineUsers: users.length,
+        onlineAdmins: admins.length,
+        onlineTenants: tenants.length,
+      },
+      users,
+      admins,
+      tenants,
+    });
+  } catch (error) {
+    console.error("Super owner online users error:", error);
+    res.status(500).json({ error: "Failed to load online users" });
   }
 });
 
