@@ -2,7 +2,9 @@ const express = require("express");
 const path = require("path");
 const fs = require("fs");
 const multer = require("multer");
+const streamifier = require("streamifier");
 const prisma = require("../lib/prisma");
+const cloudinary = require("../utils/cloudinary");
 const { requireAuth, requireRole } = require("../middleware/auth");
 
 const router = express.Router();
@@ -27,24 +29,8 @@ function requireOrg(req, res) {
 const uploadDir = path.join(__dirname, "..", "uploads", "properties");
 fs.mkdirSync(uploadDir, { recursive: true });
 
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, uploadDir);
-  },
-  filename: function (req, file, cb) {
-    const ext = path.extname(file.originalname);
-    const safeName = file.originalname
-      .replace(ext, "")
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "");
-
-    cb(null, `${Date.now()}-${safeName}${ext}`);
-  },
-});
-
 const upload = multer({
-  storage,
+  storage: multer.memoryStorage(),
   limits: { fileSize: 30 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     const allowed = ["image/jpeg", "image/png", "image/webp"];
@@ -54,6 +40,86 @@ const upload = multer({
     cb(null, true);
   },
 });
+
+function hasCloudinaryConfig() {
+  return Boolean(
+    process.env.CLOUDINARY_CLOUD_NAME &&
+      process.env.CLOUDINARY_API_KEY &&
+      process.env.CLOUDINARY_API_SECRET
+  );
+}
+
+function safeLocalFileName(originalName) {
+  const ext = path.extname(originalName || "");
+  const safeName = path
+    .basename(originalName || "property-image", ext)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+  return `${Date.now()}-${safeName || "property-image"}${ext}`;
+}
+
+function uploadToCloudinary(fileBuffer, folder) {
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      {
+        folder,
+        resource_type: "image",
+      },
+      (error, result) => {
+        if (error) return reject(error);
+        resolve(result);
+      }
+    );
+
+    streamifier.createReadStream(fileBuffer).pipe(stream);
+  });
+}
+
+async function persistPropertyImage(file, propertyId) {
+  if (hasCloudinaryConfig()) {
+    const uploaded = await uploadToCloudinary(
+      file.buffer,
+      `propertyos/properties/${propertyId}`
+    );
+
+    return {
+      imageUrl: uploaded.secure_url,
+      fileName: file.originalname,
+    };
+  }
+
+  const filename = safeLocalFileName(file.originalname);
+  const filePath = path.join(uploadDir, filename);
+  fs.writeFileSync(filePath, file.buffer);
+
+  return {
+    imageUrl: `/uploads/properties/${filename}`,
+    fileName: file.originalname,
+  };
+}
+
+async function deleteRemoteImage(imageUrl) {
+  if (!imageUrl || !String(imageUrl).includes("res.cloudinary.com")) return;
+
+  try {
+    const withoutQuery = String(imageUrl).split("?")[0];
+    const uploadIndex = withoutQuery.indexOf("/upload/");
+    if (uploadIndex === -1) return;
+
+    const publicPath = withoutQuery
+      .slice(uploadIndex + "/upload/".length)
+      .replace(/^v\d+\//, "")
+      .replace(/\.[^.]+$/, "");
+
+    if (publicPath) {
+      await cloudinary.uploader.destroy(publicPath, { resource_type: "image" });
+    }
+  } catch (error) {
+    console.error("Cloudinary property image delete error:", error);
+  }
+}
 
 /* GET all images for a property */
 router.get("/property/:propertyId", async (req, res) => {
@@ -110,17 +176,19 @@ router.post("/property/:propertyId", upload.array("images", 10), async (req, res
     const currentCount = property.propertyImages.length;
 
     const created = await Promise.all(
-      files.map((file, index) =>
-        prisma.propertyImage.create({
+      files.map(async (file, index) => {
+        const persisted = await persistPropertyImage(file, propertyId);
+
+        return prisma.propertyImage.create({
           data: {
             propertyId,
-            imageUrl: `/uploads/properties/${file.filename}`,
-            fileName: file.originalname,
+            imageUrl: persisted.imageUrl,
+            fileName: persisted.fileName,
             isPrimary: currentCount === 0 && index === 0,
             sortOrder: currentCount + index,
           },
-        })
-      )
+        });
+      })
     );
 
     res.status(201).json(created);
@@ -181,13 +249,17 @@ router.delete("/:imageId", async (req, res) => {
       return res.status(404).json({ error: "Image not found" });
     }
 
-    const filePath = path.join(__dirname, "..", image.imageUrl.replace(/^\//, ""));
+    const filePath = image.imageUrl?.startsWith("/")
+      ? path.join(__dirname, "..", image.imageUrl.replace(/^\//, ""))
+      : null;
 
     await prisma.propertyImage.delete({
       where: { id: image.id },
     });
 
-    if (fs.existsSync(filePath)) {
+    await deleteRemoteImage(image.imageUrl);
+
+    if (filePath && fs.existsSync(filePath)) {
       fs.unlinkSync(filePath);
     }
 
