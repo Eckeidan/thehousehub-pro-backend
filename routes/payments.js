@@ -191,6 +191,66 @@ async function getTenantEmail(tenant) {
   return email || null;
 }
 
+async function getAdminRecipients(organizationId) {
+  const [settings, admins] = await Promise.all([
+    getAppSettings(organizationId),
+    prisma.user.findMany({
+      where: {
+        organizationId,
+        role: { in: ["ADMIN", "OWNER"] },
+        isActive: true,
+      },
+      select: {
+        id: true,
+        email: true,
+        fullName: true,
+      },
+    }),
+  ]);
+
+  const emails = new Set();
+
+  if (settings?.email) emails.add(settings.email);
+  admins.forEach((admin) => {
+    if (admin.email) emails.add(admin.email);
+  });
+
+  return {
+    settings,
+    admins,
+    emails: Array.from(emails),
+  };
+}
+
+async function createAdminPaymentNotifications({ organizationId, tenant, payment }) {
+  try {
+    const admins = await prisma.user.findMany({
+      where: {
+        organizationId,
+        role: { in: ["ADMIN", "OWNER"] },
+        isActive: true,
+      },
+      select: { id: true },
+    });
+
+    if (!admins.length) return;
+
+    await prisma.notification.createMany({
+      data: admins.map((admin) => ({
+        userId: admin.id,
+        tenantId: tenant?.id || null,
+        title: "Payment approval required",
+        message: `${tenant?.firstName || "Tenant"} ${tenant?.lastName || ""} submitted a payment of $${Number(payment.amount || 0).toFixed(2)} for approval.`,
+        type: "WARNING",
+        category: "PAYMENT",
+        isRead: false,
+      })),
+    });
+  } catch (error) {
+    console.error("Admin payment notification error:", error);
+  }
+}
+
 async function getAppSettings(organizationId = null) {
   return prisma.appSetting.findFirst({
     where: organizationId ? { organizationId } : undefined,
@@ -200,7 +260,7 @@ async function getAppSettings(organizationId = null) {
 
 /* -------------------- EMAIL: PAYMENT APPROVED TO TENANT -------------------- */
 
-async function sendPaymentApprovedEmail({ tenant, payment }) {
+async function sendPaymentApprovedEmail({ tenant, payment, organizationId = null }) {
   try {
     console.log("sendPaymentApprovedEmail called");
 
@@ -211,7 +271,7 @@ async function sendPaymentApprovedEmail({ tenant, payment }) {
       return;
     }
 
-    const settings = await getAppSettings();
+    const settings = await getAppSettings(organizationId);
     const companyName = settings?.companyName || "The House Hub";
     
     const adminEmail = settings?.email;
@@ -280,34 +340,31 @@ async function sendPaymentApprovedEmail({ tenant, payment }) {
 
 /* -------------------- EMAIL: NEW PAYMENT TO ADMIN -------------------- */
 
-async function sendNewPaymentToAdminEmail({ tenant, payment }) {
+async function sendNewPaymentToAdminEmail({ tenant, payment, organizationId = null }) {
   try {
     console.log("sendNewPaymentToAdminEmail called");
 
-    const settings = await getAppSettings();
+    const { settings, emails } = await getAdminRecipients(organizationId);
 
-    console.log("SETTINGS EMAIL:", settings?.email);
+    console.log("ADMIN EMAILS FINAL:", emails);
 
     const companyName = settings?.companyName || "The House Hub";
-    const adminEmail = settings?.email;
 
-    console.log("ADMIN EMAIL FINAL:", adminEmail);
-
-    if (!adminEmail) {
-      console.log("No admin email configured in Settings > Company Profile.");
+    if (!emails.length) {
+      console.log("No admin email recipients found for payment approval.");
       return;
     }
 
     const tenantEmail = (await getTenantEmail(tenant)) || "N/A";
     const transporter = createTransporter();
 
-    console.log("Sending admin email to:", adminEmail);
+    console.log("Sending admin email to:", emails.join(", "));
 
     await transporter.sendMail({
 
       
       from: `"${companyName}" <${process.env.EMAIL_FROM || process.env.SMTP_USER}>`,
-      to: adminEmail,
+      to: emails,
       replyTo: tenantEmail !== "N/A" ? tenantEmail : undefined,
       subject: `New tenant payment submitted - ${companyName}`,
       html: `
@@ -338,7 +395,7 @@ async function sendNewPaymentToAdminEmail({ tenant, payment }) {
       </div>
 
       <div style="text-align:center;margin-top:26px;">
-        <a href="https://thehousehub.app/payments"
+        <a href="https://thehousehub.app/todo"
           style="display:inline-block;background:#dc2626;color:#ffffff;padding:13px 22px;border-radius:10px;text-decoration:none;font-weight:bold;">
           Review Payment Now
         </a>
@@ -506,6 +563,42 @@ router.get("/tenant-summary", requireAuth, requireRole("TENANT"), async (req, re
     console.error("Error fetching tenant payment summary:", error);
     return res.status(500).json({
       error: error.message || "Failed to fetch tenant payment summary",
+    });
+  }
+});
+
+/* -------------------- ADMIN PAYMENT APPROVAL TODOs -------------------- */
+
+router.get("/todos", requireAuth, requireRole("ADMIN", "OWNER"), async (req, res) => {
+  try {
+    const organizationId = requireOrg(req, res);
+    if (!organizationId) return;
+
+    const payments = await prisma.payment.findMany({
+      where: {
+        organizationId,
+        status: "PENDING",
+      },
+      include: {
+        lease: {
+          include: {
+            tenant: true,
+            unit: true,
+            property: true,
+          },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    return res.json({
+      count: payments.length,
+      payments,
+    });
+  } catch (error) {
+    console.error("Error fetching payment todos:", error);
+    return res.status(500).json({
+      error: error.message || "Failed to fetch payment approvals",
     });
   }
 });
@@ -755,6 +848,7 @@ router.post(
         "CARD",
         "MOBILE_MONEY",
         "CHECK",
+        "OTHER",
       ];
 
       if (!allowedMethods.includes(normalizedMethod)) {
@@ -799,9 +893,16 @@ router.post(
           category: "PAYMENT",
         });
 
+        await createAdminPaymentNotifications({
+          organizationId,
+          tenant: createdPayment.lease.tenant,
+          payment: createdPayment,
+        });
+
         await sendNewPaymentToAdminEmail({
           tenant: createdPayment.lease.tenant,
           payment: createdPayment,
+          organizationId,
         });
       }
 
@@ -925,6 +1026,7 @@ router.put("/:id", requireAuth, requireRole("ADMIN", "OWNER"), async (req, res) 
         await sendPaymentApprovedEmail({
           tenant: updatedPayment.lease.tenant,
           payment: updatedPayment,
+          organizationId,
         });
       }
 
@@ -933,7 +1035,7 @@ router.put("/:id", requireAuth, requireRole("ADMIN", "OWNER"), async (req, res) 
           tenantId: existingPayment.lease.tenant.id,
           title: "Payment failed",
           message: `Your payment of $${updatedPayment.amount} was marked as failed.`,
-          type: "ERROR",
+          type: "ALERT",
           category: "PAYMENT",
         });
       }
