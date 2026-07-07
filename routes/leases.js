@@ -103,9 +103,9 @@ router.post("/", async (req, res) => {
       notes,
     } = req.body;
 
-    if (!tenantId || !unitId || !propertyId || !rentAmount || !startDate) {
+    if (!tenantId || !propertyId || !rentAmount || !startDate) {
       return res.status(400).json({
-        error: "tenantId, unitId, propertyId, rentAmount, and startDate are required",
+        error: "tenantId, propertyId, rentAmount, and startDate are required",
       });
     }
 
@@ -117,12 +117,16 @@ router.post("/", async (req, res) => {
       return res.status(404).json({ error: "Tenant not found" });
     }
 
-    const unit = await prisma.unit.findFirst({
-      where: { id: unitId, organizationId },
-    });
+    let unit = null;
 
-    if (!unit) {
-      return res.status(404).json({ error: "Unit not found" });
+    if (unitId) {
+      unit = await prisma.unit.findFirst({
+        where: { id: unitId, organizationId },
+      });
+
+      if (!unit) {
+        return res.status(404).json({ error: "Unit not found" });
+      }
     }
 
     const property = await prisma.property.findFirst({
@@ -133,24 +137,26 @@ router.post("/", async (req, res) => {
       return res.status(404).json({ error: "Property not found" });
     }
 
-    const existingActiveLease = await prisma.lease.findFirst({
-      where: {
-        unitId,
-        organizationId,
-        status: "ACTIVE",
-      },
-    });
-
-    if (existingActiveLease) {
-      return res.status(400).json({
-        error: "This unit already has an active lease",
+    if (unitId) {
+      const existingActiveLease = await prisma.lease.findFirst({
+        where: {
+          unitId,
+          organizationId,
+          status: "ACTIVE",
+        },
       });
+
+      if (existingActiveLease) {
+        return res.status(400).json({
+          error: "This unit already has an active lease",
+        });
+      }
     }
 
     const lease = await prisma.lease.create({
       data: {
         tenantId,
-        unitId,
+        unitId: unitId || null,
         propertyId,
         organizationId,
         rentAmount: Number(rentAmount),
@@ -166,6 +172,28 @@ router.post("/", async (req, res) => {
         unit: true,
         property: true,
         payments: true,
+      },
+    });
+
+    await prisma.tenant.update({
+      where: { id: tenantId },
+      data: {
+        propertyId,
+        unitId: unitId || null,
+        monthlyRent: Number(rentAmount),
+        depositAmount: depositAmount ? Number(depositAmount) : 0,
+        leaseStartDate: new Date(startDate),
+        leaseEndDate: endDate ? new Date(endDate) : null,
+        leaseStatus: status || "ACTIVE",
+        status: status === "TERMINATED" ? "INACTIVE" : "ACTIVE",
+        isActive: status !== "TERMINATED",
+      },
+    });
+
+    await prisma.property.update({
+      where: { id: propertyId },
+      data: {
+        occupancyStatus: status === "TERMINATED" ? "AVAILABLE" : "OCCUPIED",
       },
     });
 
@@ -293,6 +321,21 @@ router.put("/:id", async (req, res) => {
             paymentDate: "desc",
           },
         },
+      },
+    });
+
+    await prisma.tenant.update({
+      where: { id: updatedLease.tenantId },
+      data: {
+        propertyId: updatedLease.propertyId,
+        unitId: updatedLease.unitId || null,
+        monthlyRent: updatedLease.rentAmount,
+        depositAmount: updatedLease.depositAmount || 0,
+        leaseStartDate: updatedLease.startDate,
+        leaseEndDate: updatedLease.endDate || null,
+        leaseStatus: updatedLease.status,
+        status: updatedLease.status === "TERMINATED" ? "INACTIVE" : "ACTIVE",
+        isActive: updatedLease.status !== "TERMINATED",
       },
     });
 

@@ -74,6 +74,50 @@ function formatMoney(value) {
   })}`;
 }
 
+async function syncActiveLeaseForTenant(tx, { tenant, property, unitId = null, organizationId }) {
+  if (!tenant?.id || !property?.id || !tenant.isActive) return null;
+
+  const rentAmount = Number(tenant.monthlyRent || property.monthlyRent || 0);
+
+  if (!rentAmount || Number.isNaN(rentAmount) || rentAmount <= 0) return null;
+
+  const existingLease = await tx.lease.findFirst({
+    where: {
+      tenantId: tenant.id,
+      organizationId,
+      status: "ACTIVE",
+    },
+    orderBy: { createdAt: "desc" },
+  });
+
+  const leaseData = {
+    unitId: unitId || null,
+    propertyId: property.id,
+    rentAmount,
+    depositAmount: tenant.depositAmount ? Number(tenant.depositAmount) : 0,
+    startDate: tenant.leaseStartDate || tenant.createdAt || new Date(),
+    endDate: tenant.leaseEndDate || null,
+    billingDay: 1,
+    status: "ACTIVE",
+    notes: "Synchronized from tenant property assignment.",
+  };
+
+  if (existingLease) {
+    return tx.lease.update({
+      where: { id: existingLease.id },
+      data: leaseData,
+    });
+  }
+
+  return tx.lease.create({
+    data: {
+      tenantId: tenant.id,
+      organizationId,
+      ...leaseData,
+    },
+  });
+}
+
 async function sendTenantWelcomeEmail({
   to,
   fullName,
@@ -323,6 +367,13 @@ router.post("/", async (req, res) => {
         data: { occupancyStatus: isActive ? "OCCUPIED" : "AVAILABLE" },
       });
 
+      await syncActiveLeaseForTenant(tx, {
+        tenant,
+        property,
+        unitId: unitId || null,
+        organizationId,
+      });
+
       const fullTenant = await tx.tenant.findFirst({
         where: { id: tenant.id, organizationId },
         include: {
@@ -570,7 +621,7 @@ router.patch("/:id/move-out", async (req, res) => {
 
     await prisma.lease.updateMany({
       where: { organizationId, tenantId: id, status: "ACTIVE" },
-      data: { status: "TERMINATED" },
+      data: { status: "TERMINATED", endDate: new Date() },
     });
 
     return res.json({
@@ -717,6 +768,27 @@ router.put("/:id", async (req, res) => {
       },
       include: { property: true, unit: true, user: true },
     });
+
+    if (isActive) {
+      await syncActiveLeaseForTenant(prisma, {
+        tenant: updatedTenant,
+        property,
+        unitId: unitId || null,
+        organizationId,
+      });
+    } else {
+      await prisma.lease.updateMany({
+        where: {
+          tenantId: id,
+          organizationId,
+          status: "ACTIVE",
+        },
+        data: {
+          status: "TERMINATED",
+          endDate: leaseEndDate ? new Date(leaseEndDate) : new Date(),
+        },
+      });
+    }
 
     if (existingTenant.user?.id) {
       await prisma.user.update({

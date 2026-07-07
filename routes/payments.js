@@ -149,6 +149,66 @@ async function findActiveLeaseForTenant(tenantId, organizationId) {
   );
 }
 
+function resolveTenantMonthlyRent(tenant) {
+  const possibleFields = [
+    tenant?.monthlyRent,
+    tenant?.property?.monthlyRent,
+    tenant?.unit?.monthlyRent,
+  ];
+
+  const found = possibleFields.find(
+    (value) => value !== undefined && value !== null && !isNaN(Number(value))
+  );
+
+  return found !== undefined ? Number(found) : null;
+}
+
+async function findOrCreateActiveLeaseForTenant(tenantId, organizationId) {
+  const existingLease = await findActiveLeaseForTenant(tenantId, organizationId);
+
+  if (existingLease) return existingLease;
+
+  const tenant = await prisma.tenant.findFirst({
+    where: { id: tenantId, organizationId },
+    include: {
+      property: true,
+      unit: true,
+    },
+  });
+
+  if (!tenant) return null;
+
+  const propertyId = tenant.propertyId || tenant.property?.id || tenant.unit?.propertyId;
+  const rentAmount = resolveTenantMonthlyRent(tenant);
+
+  if (!propertyId || !rentAmount || rentAmount <= 0) {
+    return null;
+  }
+
+  const startDate = tenant.leaseStartDate || tenant.createdAt || new Date();
+
+  return prisma.lease.create({
+    data: {
+      tenantId: tenant.id,
+      unitId: tenant.unitId || null,
+      propertyId,
+      organizationId,
+      rentAmount,
+      depositAmount: tenant.depositAmount ? Number(tenant.depositAmount) : 0,
+      startDate,
+      endDate: tenant.leaseEndDate || null,
+      billingDay: 1,
+      status: tenant.leaseStatus || "ACTIVE",
+      notes: "Auto-created from tenant assignment for payment processing.",
+    },
+    include: {
+      tenant: true,
+      unit: true,
+      property: true,
+    },
+  });
+}
+
 async function removePaymentProofFile(payment) {
   try {
     if (!payment?.proofImageUrl) return;
@@ -544,7 +604,7 @@ router.get("/tenant-summary", requireAuth, requireRole("TENANT"), async (req, re
       });
     }
 
-    const lease = await findActiveLeaseForTenant(tenantId, organizationId);
+    const lease = await findOrCreateActiveLeaseForTenant(tenantId, organizationId);
 
     if (!lease) {
       return res.json({
@@ -809,11 +869,12 @@ router.post(
         });
       }
 
-      const lease = await findActiveLeaseForTenant(tenantId, organizationId);
+      const lease = await findOrCreateActiveLeaseForTenant(tenantId, organizationId);
 
       if (!lease) {
         return res.status(404).json({
-          error: "No active lease found for this tenant",
+          error:
+            "No active lease found for this tenant. Please assign a property and monthly rent before payment.",
         });
       }
 
