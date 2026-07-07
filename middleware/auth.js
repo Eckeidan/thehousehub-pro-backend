@@ -1,10 +1,11 @@
 const jwt = require("jsonwebtoken");
-const { recordPresence } = require("../lib/presence");
+const prisma = require("../lib/prisma");
+const { recordPresence, sessionExpiryFromNow } = require("../lib/presence");
 
 /**
  * AUTH MIDDLEWARE
  */
-function requireAuth(req, res, next) {
+async function requireAuth(req, res, next) {
   try {
     const authHeader = req.headers.authorization;
 
@@ -15,8 +16,57 @@ function requireAuth(req, res, next) {
     const token = authHeader.split(" ")[1];
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
+    if (!decoded.sessionId) {
+      return res.status(401).json({ error: "Session expired. Please login again." });
+    }
+
+    const session = await prisma.userSession.findUnique({
+      where: { id: decoded.sessionId },
+      include: {
+        user: {
+          select: {
+            id: true,
+            isActive: true,
+            role: true,
+          },
+        },
+      },
+    });
+
+    const now = new Date();
+    if (
+      !session ||
+      !session.isActive ||
+      session.userId !== decoded.userId ||
+      session.expiresAt <= now ||
+      !session.user?.isActive
+    ) {
+      if (session?.isActive) {
+        await prisma.userSession.update({
+          where: { id: session.id },
+          data: {
+            isActive: false,
+            logoutAt: now,
+            logoutReason: session.expiresAt <= now ? "inactivity_timeout" : "invalid_session",
+          },
+        });
+      }
+
+      return res.status(401).json({ error: "Session expired. Please login again." });
+    }
+
     req.user = decoded;
+    req.session = session;
     recordPresence(req);
+
+    await prisma.userSession.update({
+      where: { id: session.id },
+      data: {
+        lastSeenAt: now,
+        expiresAt: sessionExpiryFromNow(),
+      },
+    });
+
     next();
   } catch (error) {
     console.error("AUTH ERROR =", error.message);

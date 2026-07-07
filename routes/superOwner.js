@@ -2,8 +2,6 @@ const express = require("express");
 const bcrypt = require("bcryptjs");
 const prisma = require("../lib/prisma");
 const {
-  getActivePresence,
-  isPrivateIp,
   locationLabel,
   parseUserAgent,
 } = require("../lib/presence");
@@ -115,27 +113,6 @@ function parseWindowMinutes(value, fallback = 15, max = 1440) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
   return Math.min(Math.floor(parsed), max);
-}
-
-function approximateLocationFromAudit(log) {
-  const location = log.metadata?.approximateLocation || {};
-  const parts = [location.city, location.region, location.country].filter(Boolean);
-
-  if (parts.length > 0) {
-    return locationLabel(log.ipAddress, location);
-  }
-
-  if (isPrivateIp(log.ipAddress)) {
-    return {
-      label: "Local or private network",
-      precision: "Not publicly geolocatable",
-    };
-  }
-
-  return {
-    label: "Approximation unavailable",
-    precision: "IP captured, no geo header",
-  };
 }
 
 function assertSameOrganization(record, organizationId) {
@@ -582,17 +559,29 @@ router.get("/audit", requirePlatformPermission("audit:read"), async (req, res) =
 router.get("/online-users", requirePlatformPermission("support:read"), async (req, res) => {
   try {
     const windowMinutes = parseWindowMinutes(req.query.windowMinutes, 15, 1440);
+    const now = new Date();
     const since = new Date(Date.now() - windowMinutes * 60 * 1000);
-    const presenceRows = getActivePresence(windowMinutes);
-    const presenceUserIds = presenceRows.map((item) => item.userId);
 
-    const logs = await prisma.systemAuditLog.findMany({
+    await prisma.userSession.updateMany({
       where: {
-        actorUserId: { not: null },
-        createdAt: { gte: since },
+        isActive: true,
+        expiresAt: { lte: now },
+      },
+      data: {
+        isActive: false,
+        logoutAt: now,
+        logoutReason: "inactivity_timeout",
+      },
+    });
+
+    const sessions = await prisma.userSession.findMany({
+      where: {
+        isActive: true,
+        expiresAt: { gt: now },
+        lastSeenAt: { gte: since },
       },
       include: {
-        actor: {
+        user: {
           select: {
             id: true,
             fullName: true,
@@ -605,81 +594,36 @@ router.get("/online-users", requirePlatformPermission("support:read"), async (re
             },
           },
         },
-        organization: {
-          select: { id: true, name: true, email: true, companyName: true },
-        },
       },
-      orderBy: { createdAt: "desc" },
+      orderBy: { lastSeenAt: "desc" },
       take: 1000,
     });
 
     const byUser = new Map();
-    const usersById = new Map();
 
-    if (presenceUserIds.length > 0) {
-      const dbUsers = await prisma.user.findMany({
-        where: { id: { in: presenceUserIds } },
-        select: {
-          id: true,
-          fullName: true,
-          email: true,
-          role: true,
-          isActive: true,
-          organizationId: true,
-          organization: {
-            select: { id: true, name: true, email: true, companyName: true },
-          },
-        },
-      });
+    for (const session of sessions) {
+      if (!session.user || byUser.has(session.userId)) continue;
 
-      for (const dbUser of dbUsers) {
-        usersById.set(dbUser.id, dbUser);
-      }
-    }
-
-    for (const presence of presenceRows) {
-      const dbUser = usersById.get(presence.userId);
-
-      byUser.set(presence.userId, {
-        userId: presence.userId,
-        fullName: dbUser?.fullName || "Unknown user",
-        email: dbUser?.email || presence.email || "Unknown email",
-        role: dbUser?.role || presence.role || "UNKNOWN",
-        isActive: dbUser?.isActive ?? true,
-        organization: dbUser?.organization || null,
-        lastActivityAt: presence.lastActivityAt,
-        lastAction: presence.lastAction,
-        lastPath: presence.lastPath,
-        ipAddress: presence.ipAddress,
-        userAgent: presence.userAgent,
-        device: presence.device,
-        approximateLocation: presence.approximateLocation,
-        source: "presence",
-      });
-    }
-
-    for (const log of logs) {
-      if (!log.actorUserId || byUser.has(log.actorUserId)) continue;
-
-      const device = parseUserAgent(log.userAgent);
-      const location = approximateLocationFromAudit(log);
-      const organization = log.actor?.organization || log.organization || null;
-
-      byUser.set(log.actorUserId, {
-        userId: log.actorUserId,
-        fullName: log.actor?.fullName || "Unknown user",
-        email: log.actor?.email || log.actorEmail || "Unknown email",
-        role: log.actor?.role || log.actorRole || "UNKNOWN",
-        isActive: log.actor?.isActive ?? true,
-        organization,
-        lastActivityAt: log.createdAt,
-        lastAction: log.action,
-        lastPath: log.path,
-        ipAddress: log.ipAddress,
-        userAgent: log.userAgent,
-        device,
-        approximateLocation: location,
-        source: "audit",
+      byUser.set(session.userId, {
+        userId: session.userId,
+        sessionId: session.id,
+        fullName: session.user.fullName || "Unknown user",
+        email: session.user.email || "Unknown email",
+        role: session.user.role || session.role || "UNKNOWN",
+        isActive: session.user.isActive,
+        organization: session.user.organization || null,
+        lastActivityAt: session.lastSeenAt,
+        lastAction: "Authenticated session activity",
+        lastPath: "Active session",
+        ipAddress: session.ipAddress,
+        userAgent: session.userAgent,
+        device: parseUserAgent(session.userAgent),
+        approximateLocation: locationLabel(
+          session.ipAddress,
+          session.approximateLocation || {}
+        ),
+        source: "session",
+        expiresAt: session.expiresAt,
       });
     }
 

@@ -3,6 +3,11 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const prisma = require("../lib/prisma");
 const { requireAuth } = require("../middleware/auth");
+const {
+  buildApproximateLocation,
+  getClientIp,
+  sessionExpiryFromNow,
+} = require("../lib/presence");
 
 const router = express.Router();
 
@@ -73,9 +78,26 @@ router.post("/login", async (req, res) => {
       });
     }
 
+    const ipAddress = getClientIp(req);
+    const approximateLocation = buildApproximateLocation(req.headers);
+    const session = await prisma.userSession.create({
+      data: {
+        userId: user.id,
+        organizationId: user.organizationId || null,
+        tenantId: user.tenantId || null,
+        role: user.role,
+        isActive: true,
+        ipAddress,
+        userAgent: req.headers["user-agent"] || null,
+        approximateLocation,
+        expiresAt: sessionExpiryFromNow(),
+      },
+    });
+
     const token = jwt.sign(
       {
         userId: user.id,
+        sessionId: session.id,
         email: user.email,
         role: user.role,
         tenantId: user.tenantId || null,
@@ -161,6 +183,30 @@ router.get("/me", requireAuth, async (req, res) => {
     return res.status(500).json({
       error: "Failed to fetch user",
     });
+  }
+});
+
+router.post("/logout", requireAuth, async (req, res) => {
+  try {
+    if (req.user?.sessionId) {
+      await prisma.userSession.updateMany({
+        where: {
+          id: req.user.sessionId,
+          userId: req.user.userId,
+          isActive: true,
+        },
+        data: {
+          isActive: false,
+          logoutAt: new Date(),
+          logoutReason: req.body?.reason || "logout",
+        },
+      });
+    }
+
+    return res.json({ success: true });
+  } catch (error) {
+    console.error("Logout error:", error);
+    return res.status(500).json({ error: "Failed to logout" });
   }
 });
 
