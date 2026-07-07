@@ -1,6 +1,12 @@
 const express = require("express");
 const bcrypt = require("bcryptjs");
 const prisma = require("../lib/prisma");
+const {
+  getActivePresence,
+  isPrivateIp,
+  locationLabel,
+  parseUserAgent,
+} = require("../lib/presence");
 const { requireAuth, requireSuperOwner } = require("../middleware/auth");
 
 const router = express.Router();
@@ -111,57 +117,12 @@ function parseWindowMinutes(value, fallback = 15, max = 1440) {
   return Math.min(Math.floor(parsed), max);
 }
 
-function parseUserAgent(userAgent) {
-  const raw = String(userAgent || "");
-  const browser = raw.includes("Edg/")
-    ? "Microsoft Edge"
-    : raw.includes("Chrome/")
-    ? "Chrome"
-    : raw.includes("Safari/") && !raw.includes("Chrome/")
-    ? "Safari"
-    : raw.includes("Firefox/")
-    ? "Firefox"
-    : raw
-    ? "Unknown browser"
-    : "Unknown";
-
-  const os = raw.includes("Mac OS X")
-    ? "macOS"
-    : raw.includes("Windows")
-    ? "Windows"
-    : raw.includes("Android")
-    ? "Android"
-    : raw.includes("iPhone") || raw.includes("iPad")
-    ? "iOS"
-    : raw.includes("Linux")
-    ? "Linux"
-    : "Unknown";
-
-  return { browser, os };
-}
-
-function isPrivateIp(ipAddress) {
-  const ip = String(ipAddress || "");
-  return (
-    !ip ||
-    ip === "::1" ||
-    ip === "127.0.0.1" ||
-    ip.startsWith("::ffff:127.") ||
-    ip.startsWith("10.") ||
-    ip.startsWith("192.168.") ||
-    /^172\.(1[6-9]|2\d|3[0-1])\./.test(ip)
-  );
-}
-
 function approximateLocationFromAudit(log) {
   const location = log.metadata?.approximateLocation || {};
   const parts = [location.city, location.region, location.country].filter(Boolean);
 
   if (parts.length > 0) {
-    return {
-      label: parts.join(", "),
-      precision: "Proxy-provided approximation",
-    };
+    return locationLabel(log.ipAddress, location);
   }
 
   if (isPrivateIp(log.ipAddress)) {
@@ -622,6 +583,8 @@ router.get("/online-users", requirePlatformPermission("support:read"), async (re
   try {
     const windowMinutes = parseWindowMinutes(req.query.windowMinutes, 15, 1440);
     const since = new Date(Date.now() - windowMinutes * 60 * 1000);
+    const presenceRows = getActivePresence(windowMinutes);
+    const presenceUserIds = presenceRows.map((item) => item.userId);
 
     const logs = await prisma.systemAuditLog.findMany({
       where: {
@@ -651,6 +614,49 @@ router.get("/online-users", requirePlatformPermission("support:read"), async (re
     });
 
     const byUser = new Map();
+    const usersById = new Map();
+
+    if (presenceUserIds.length > 0) {
+      const dbUsers = await prisma.user.findMany({
+        where: { id: { in: presenceUserIds } },
+        select: {
+          id: true,
+          fullName: true,
+          email: true,
+          role: true,
+          isActive: true,
+          organizationId: true,
+          organization: {
+            select: { id: true, name: true, email: true, companyName: true },
+          },
+        },
+      });
+
+      for (const dbUser of dbUsers) {
+        usersById.set(dbUser.id, dbUser);
+      }
+    }
+
+    for (const presence of presenceRows) {
+      const dbUser = usersById.get(presence.userId);
+
+      byUser.set(presence.userId, {
+        userId: presence.userId,
+        fullName: dbUser?.fullName || "Unknown user",
+        email: dbUser?.email || presence.email || "Unknown email",
+        role: dbUser?.role || presence.role || "UNKNOWN",
+        isActive: dbUser?.isActive ?? true,
+        organization: dbUser?.organization || null,
+        lastActivityAt: presence.lastActivityAt,
+        lastAction: presence.lastAction,
+        lastPath: presence.lastPath,
+        ipAddress: presence.ipAddress,
+        userAgent: presence.userAgent,
+        device: presence.device,
+        approximateLocation: presence.approximateLocation,
+        source: "presence",
+      });
+    }
 
     for (const log of logs) {
       if (!log.actorUserId || byUser.has(log.actorUserId)) continue;
@@ -673,6 +679,7 @@ router.get("/online-users", requirePlatformPermission("support:read"), async (re
         userAgent: log.userAgent,
         device,
         approximateLocation: location,
+        source: "audit",
       });
     }
 
