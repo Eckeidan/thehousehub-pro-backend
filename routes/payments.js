@@ -398,6 +398,84 @@ async function sendPaymentApprovedEmail({ tenant, payment, organizationId = null
   }
 }
 
+/* -------------------- EMAIL: PAYMENT REJECTED TO TENANT -------------------- */
+
+async function sendPaymentRejectedEmail({ tenant, payment, organizationId = null }) {
+  try {
+    console.log("sendPaymentRejectedEmail called");
+
+    const to = await getTenantEmail(tenant);
+
+    if (!to) {
+      console.log("No tenant email found. Tenant rejection email skipped.");
+      return;
+    }
+
+    const settings = await getAppSettings(organizationId);
+    const companyName = settings?.companyName || "The House Hub";
+    const adminEmail = settings?.supportEmail || settings?.email;
+    const transporter = createTransporter();
+
+    console.log("Sending tenant rejection email to:", to);
+
+    await transporter.sendMail({
+      from: `"${companyName}" <${process.env.EMAIL_FROM || process.env.SMTP_USER}>`,
+      to,
+      replyTo: adminEmail,
+      subject: `Payment needs review - ${companyName}`,
+      html: `
+<div style="font-family:Arial,sans-serif;background:#f8fafc;padding:20px;">
+  <div style="max-width:600px;margin:auto;background:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 10px 30px rgba(15,23,42,0.08);">
+    <div style="background:linear-gradient(90deg,#92400e,#f59e0b);padding:20px;color:#ffffff;">
+      <h2 style="margin:0;">${companyName}</h2>
+      <p style="margin:0;font-size:13px;opacity:0.9;">Payment review update</p>
+    </div>
+
+    <div style="padding:25px;">
+      <h2 style="color:#0f172a;margin-bottom:10px;">Payment Rejected</h2>
+
+      <p style="font-size:15px;color:#374151;">
+        Hello <strong>${tenant?.firstName || "Tenant"}</strong>,
+      </p>
+
+      <p style="font-size:15px;color:#374151;">
+        Your submitted payment could not be approved after review. Please verify the deposit information or contact your property administrator.
+      </p>
+
+      <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:20px;margin-top:20px;">
+        <p style="margin:5px 0;"><strong>Amount:</strong> $${Number(payment.amount || 0).toFixed(2)}</p>
+        <p style="margin:5px 0;"><strong>Method:</strong> ${payment.paymentMethod || "N/A"}</p>
+        <p style="margin:5px 0;"><strong>Reference:</strong> ${payment.reference || "N/A"}</p>
+        <p style="margin:5px 0;"><strong>Status:</strong> <span style="color:#d97706;font-weight:bold;">REJECTED</span></p>
+      </div>
+
+      <div style="margin-top:25px;text-align:center;">
+        <a href="https://thehousehub.app/tenant/payments"
+           style="display:inline-block;background:#d97706;color:#fff;padding:12px 20px;border-radius:8px;text-decoration:none;font-weight:bold;">
+           Review Payments
+        </a>
+      </div>
+
+      <p style="margin-top:25px;font-size:14px;color:#6b7280;">
+        If you believe this is a mistake, contact ${adminEmail || "your property administrator"}.
+      </p>
+    </div>
+
+    <div style="background:#f1f5f9;padding:15px;text-align:center;font-size:12px;color:#6b7280;">
+      <p style="margin:0;">Need help? Contact us at ${adminEmail || "support"}</p>
+      <p style="margin:0;">© ${new Date().getFullYear()} ${companyName}</p>
+    </div>
+  </div>
+</div>
+`,
+    });
+
+    console.log("Tenant rejection email sent successfully.");
+  } catch (error) {
+    console.error("Payment rejected email error full:", error);
+  }
+}
+
 /* -------------------- EMAIL: NEW PAYMENT TO ADMIN -------------------- */
 
 async function sendNewPaymentToAdminEmail({ tenant, payment, organizationId = null }) {
@@ -1094,10 +1172,16 @@ router.put("/:id", requireAuth, requireRole("ADMIN", "OWNER"), async (req, res) 
       if (nextStatus === "FAILED") {
         await createNotification({
           tenantId: existingPayment.lease.tenant.id,
-          title: "Payment failed",
-          message: `Your payment of $${updatedPayment.amount} was marked as failed.`,
-          type: "ALERT",
+          title: "Payment rejected",
+          message: `Your payment of $${updatedPayment.amount} was rejected. Please review the payment details or contact your property administrator.`,
+          type: "WARNING",
           category: "PAYMENT",
+        });
+
+        await sendPaymentRejectedEmail({
+          tenant: updatedPayment.lease.tenant,
+          payment: updatedPayment,
+          organizationId,
         });
       }
     }
