@@ -157,6 +157,40 @@ async function sendTenantWelcomeEmail({
   });
 }
 
+async function sendTenantPasswordResetEmail({ to, fullName, password }) {
+  const appUrl = process.env.FRONTEND_URL || "https://thehousehub.app/login";
+  const brandName = process.env.EMAIL_BRAND_NAME || "The House Hub";
+  const transporter = createTransporter();
+
+  await transporter.sendMail({
+    from: process.env.EMAIL_FROM || `"${brandName}" <${process.env.SMTP_USER}>`,
+    to,
+    subject: `Your ${brandName} tenant password was reset`,
+    html: `
+      <div style="font-family:Arial,sans-serif;background:#f4f7fb;padding:24px;">
+        <div style="max-width:640px;margin:auto;background:#ffffff;border-radius:18px;overflow:hidden;border:1px solid #e5e7eb;">
+          <div style="background:linear-gradient(90deg,#1f3270,#45C9B5);padding:26px;color:#ffffff;">
+            <h2 style="margin:0;font-size:24px;">Tenant password reset</h2>
+            <p style="margin:8px 0 0;opacity:.9;">A new temporary password has been generated.</p>
+          </div>
+          <div style="padding:28px;color:#111827;">
+            <p>Hello <strong>${fullName}</strong>,</p>
+            <p>Your tenant portal password was reset by your property administrator.</p>
+            <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:14px;padding:18px;margin:22px 0;">
+              <p><strong>Login URL:</strong> <a href="${appUrl}">${appUrl}</a></p>
+              <p><strong>Email:</strong> ${to}</p>
+              <p><strong>Temporary Password:</strong> ${password}</p>
+            </div>
+            <p style="margin-top:22px;color:#6b7280;font-size:13px;">
+              For security, please change this temporary password after login.
+            </p>
+          </div>
+        </div>
+      </div>
+    `,
+  });
+}
+
 /* GET all tenants */
 router.get("/", async (req, res) => {
   try {
@@ -412,6 +446,81 @@ router.post("/:id/create-account", async (req, res) => {
     console.error("Error creating tenant account:", error);
     return res.status(500).json({
       error: error.message || "Failed to create tenant account",
+    });
+  }
+});
+
+/* RESET tenant login password */
+router.post("/:id/reset-password", async (req, res) => {
+  try {
+    const organizationId = requireOrg(req, res);
+    if (!organizationId) return;
+
+    const { id } = req.params;
+
+    const tenant = await prisma.tenant.findFirst({
+      where: { id, organizationId },
+      include: {
+        user: true,
+        property: true,
+      },
+    });
+
+    if (!tenant) return res.status(404).json({ error: "Tenant not found" });
+
+    if (!tenant.user) {
+      return res.status(400).json({
+        error: "This tenant does not have a portal account yet",
+      });
+    }
+
+    const temporaryPassword = generatePassword(12);
+    const passwordHash = await bcrypt.hash(temporaryPassword, 10);
+
+    const updatedUser = await prisma.user.update({
+      where: { id: tenant.user.id },
+      data: {
+        passwordHash,
+        mustChangePassword: true,
+        isActive: true,
+      },
+      select: {
+        id: true,
+        fullName: true,
+        email: true,
+        role: true,
+        tenantId: true,
+        organizationId: true,
+        mustChangePassword: true,
+        isActive: true,
+      },
+    });
+
+    let emailSent = false;
+
+    try {
+      await sendTenantPasswordResetEmail({
+        to: updatedUser.email,
+        fullName: updatedUser.fullName,
+        password: temporaryPassword,
+      });
+      emailSent = true;
+    } catch (emailError) {
+      console.error("Tenant password reset email error:", emailError);
+    }
+
+    return res.json({
+      message: emailSent
+        ? "Tenant password reset successfully and email sent"
+        : "Tenant password reset successfully. Email delivery failed.",
+      emailSent,
+      password: temporaryPassword,
+      user: updatedUser,
+    });
+  } catch (error) {
+    console.error("Error resetting tenant password:", error);
+    return res.status(500).json({
+      error: error.message || "Failed to reset tenant password",
     });
   }
 });
