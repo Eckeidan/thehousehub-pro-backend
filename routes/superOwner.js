@@ -1,4 +1,5 @@
 const express = require("express");
+const bcrypt = require("bcryptjs");
 const prisma = require("../lib/prisma");
 const { requireAuth, requireSuperOwner } = require("../middleware/auth");
 
@@ -17,7 +18,10 @@ const PLATFORM_PERMISSIONS = [
   "support:read",
   "support:suspend_user",
   "support:reactivate_user",
+  "super_owner:create",
 ];
+
+const PLATFORM_PERMISSION_SET = new Set(PLATFORM_PERMISSIONS);
 
 async function getPlatformAccess(userId) {
   if (!userId) return { accessAll: false, permissions: [] };
@@ -105,6 +109,18 @@ function assertSameOrganization(record, organizationId) {
   return record && record.organizationId === organizationId;
 }
 
+function normalizePermissionList(permissions) {
+  if (!Array.isArray(permissions)) return [];
+
+  return Array.from(
+    new Set(
+      permissions
+        .map((permission) => String(permission || "").trim())
+        .filter((permission) => PLATFORM_PERMISSION_SET.has(permission))
+    )
+  );
+}
+
 router.get("/permissions", async (req, res) => {
   try {
     const access = await getPlatformAccess(req.user?.userId);
@@ -117,6 +133,107 @@ router.get("/permissions", async (req, res) => {
   } catch (error) {
     console.error("Super owner permissions error:", error);
     res.status(500).json({ error: "Failed to load platform permissions" });
+  }
+});
+
+router.post("/users", requirePlatformPermission("super_owner:create"), async (req, res) => {
+  try {
+    const {
+      fullName,
+      email,
+      temporaryPassword,
+      platformAccessAll = false,
+      platformPermissions = [],
+    } = req.body || {};
+
+    const normalizedName = String(fullName || "").trim();
+    const normalizedEmail = String(email || "").trim().toLowerCase();
+    const normalizedPassword = String(temporaryPassword || "");
+    const requestedPermissions = normalizePermissionList(platformPermissions);
+    const creatorAccess = req.platformAccess || { accessAll: false, permissions: [] };
+    const wantsAccessAll = platformAccessAll === true;
+
+    if (!normalizedName || !normalizedEmail || !normalizedPassword) {
+      return res.status(400).json({
+        error: "fullName, email, and temporaryPassword are required",
+      });
+    }
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      return res.status(400).json({ error: "Email is invalid" });
+    }
+
+    if (normalizedPassword.length < 12) {
+      return res.status(400).json({
+        error: "Temporary password must be at least 12 characters",
+      });
+    }
+
+    if (wantsAccessAll && !creatorAccess.accessAll) {
+      return res.status(403).json({
+        error: "Only a platform root super owner can grant root access",
+      });
+    }
+
+    if (!creatorAccess.accessAll) {
+      const unauthorizedPermission = requestedPermissions.find(
+        (permission) => !creatorAccess.permissions.includes(permission)
+      );
+
+      if (unauthorizedPermission) {
+        return res.status(403).json({
+          error: "Cannot grant a permission you do not have",
+          permission: unauthorizedPermission,
+        });
+      }
+    }
+
+    const existingUser = await prisma.user.findUnique({
+      where: { email: normalizedEmail },
+      select: { id: true },
+    });
+
+    if (existingUser) {
+      return res.status(409).json({
+        error: "A user already exists with this email",
+      });
+    }
+
+    const passwordHash = await bcrypt.hash(normalizedPassword, 12);
+
+    const createdUser = await prisma.user.create({
+      data: {
+        fullName: normalizedName,
+        email: normalizedEmail,
+        passwordHash,
+        role: "SUPER_OWNER",
+        isActive: true,
+        organizationId: null,
+        tenantId: null,
+        mustChangePassword: true,
+        platformAccessAll: wantsAccessAll,
+        platformPermissions: wantsAccessAll ? [] : requestedPermissions,
+      },
+      select: {
+        id: true,
+        fullName: true,
+        email: true,
+        role: true,
+        isActive: true,
+        mustChangePassword: true,
+        platformAccessAll: true,
+        platformPermissions: true,
+        createdAt: true,
+      },
+    });
+
+    res.status(201).json({
+      success: true,
+      user: createdUser,
+    });
+  } catch (error) {
+    console.error("Super owner create user error:", error);
+    res.status(500).json({ error: "Failed to create super owner account" });
   }
 });
 
