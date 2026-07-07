@@ -17,6 +17,7 @@ const paymentsRoutes = require("./routes/payments");
 const documentsRoutes = require("./routes/documents");
 const settingsRoutes = require("./routes/settings");
 const insightsRoutes = require("./routes/insights");
+const { router: reportsRoutes, runDueReportSchedules } = require("./routes/reports");
 const usersRoutes = require("./routes/users");
 const contractorsRoutes = require("./routes/contractors");
 const tenantContactRoutes = require("./routes/tenantContact");
@@ -115,6 +116,7 @@ app.use("/api/payments", paymentsRoutes);
 app.use("/api/documents", documentsRoutes);
 app.use("/api/settings", settingsRoutes);
 app.use("/api/insights", insightsRoutes);
+app.use("/api/reports", reportsRoutes);
 app.use("/api/users", usersRoutes);
 app.use("/api/contractors", contractorsRoutes);
 app.use("/api/tenant/contact", tenantContactRoutes);
@@ -128,6 +130,14 @@ app.use("/api/super-owner", superOwnerRoutes);
 console.log("Dashboard route mounted: /api/dashboard");
 console.log("Tenant contact route mounted: /api/tenant/contact");
 console.log("Tenant chatbot route mounted: /api/tenant-chatbot");
+
+if (process.env.DISABLE_REPORT_SCHEDULER !== "true") {
+  setInterval(() => {
+    runDueReportSchedules().catch((error) => {
+      console.error("Scheduled report worker error:", error);
+    });
+  }, 15 * 60 * 1000);
+}
 
 app.use("/api", (req, res) => {
   return res.status(404).json({
