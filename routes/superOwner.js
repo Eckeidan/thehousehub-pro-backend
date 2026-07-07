@@ -141,7 +141,19 @@ router.get("/organizations", async (req, res) => {
       },
     });
 
-    res.json(organizations);
+    res.json(
+      organizations.map((organization) => ({
+        id: organization.id,
+        name: organization.name,
+        email: organization.email,
+        phone: organization.phone,
+        companyName: organization.companyName,
+        createdAt: organization.createdAt,
+        updatedAt: organization.updatedAt,
+        counts: organization._count,
+        users: organization.users,
+      }))
+    );
   } catch (error) {
     console.error("Super owner organizations error:", error);
     res.status(500).json({ error: "Failed to load organizations" });
