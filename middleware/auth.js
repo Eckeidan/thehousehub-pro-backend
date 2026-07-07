@@ -62,10 +62,20 @@ function requireAdminOrOwner(req, res, next) {
   return requireRole("ADMIN", "OWNER")(req, res, next);
 }
 
+function requireSuperOwner(req, res, next) {
+  return requireRole("SUPER_OWNER")(req, res, next);
+}
+
+function requireAdminOwnerOrSuperOwner(req, res, next) {
+  return requireRole("ADMIN", "OWNER", "SUPER_OWNER")(req, res, next);
+}
+
 module.exports = {
   requireAuth,
   requireRole,
   requireAdmin,
   requireOwner,
   requireAdminOrOwner,
+  requireSuperOwner,
+  requireAdminOwnerOrSuperOwner,
 };

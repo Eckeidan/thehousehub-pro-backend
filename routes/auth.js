@@ -8,6 +8,8 @@ const router = express.Router();
 
 function buildRedirectPath(role) {
   switch (String(role || "").trim().toUpperCase()) {
+    case "SUPER_OWNER":
+      return "/super-owner";
     case "ADMIN":
       return "/dashboard";
     case "OWNER":

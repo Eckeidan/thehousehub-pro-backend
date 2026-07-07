@@ -484,11 +484,41 @@ model User {
   tenant                Tenant?              @relation(fields: [tenantId], references: [id])
   requestedLeaseChanges LeaseChangeRequest[] @relation("LeaseChangeRequestedBy")
   mustChangePassword    Boolean              @default(false)
+  systemAuditLogs       SystemAuditLog[]     @relation("SystemAuditActor")
 
   @@index([email])
   @@index([role])
   @@index([isActive])
   @@index([organizationId])
+}
+
+model SystemAuditLog {
+  id             String    @id @default(cuid())
+  actorUserId    String?
+  actorEmail     String?
+  actorRole      UserRole?
+  organizationId String?
+  action         String
+  resource       String?
+  resourceId     String?
+  method         String
+  path           String
+  statusCode     Int?
+  ipAddress      String?
+  userAgent      String?
+  metadata       Json?
+  createdAt      DateTime  @default(now())
+
+  actor        User?         @relation("SystemAuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+
+  @@index([actorUserId])
+  @@index([actorRole])
+  @@index([organizationId])
+  @@index([action])
+  @@index([resource])
+  @@index([statusCode])
+  @@index([createdAt])
 }
 
 model Notification {
@@ -591,6 +621,7 @@ model Organization {
   maintenanceRequests MaintenanceRequest[]
   units               Unit[]
   appSettings         AppSetting[]
+  systemAuditLogs     SystemAuditLog[]
 
   contractors Contractor[]
 }
@@ -608,6 +639,7 @@ enum LeaseChangeRequestStatus {
 }
 
 enum UserRole {
+  SUPER_OWNER
   ADMIN
   OWNER
   TENANT

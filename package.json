@@ -12,6 +12,7 @@
     "prisma:seed": "prisma db seed",
     "reset:data": "node scripts/resetData.js",
     "reset:raw": "node scripts/resetDataRaw.js",
+    "create:super-owner": "node scripts/createSuperOwner.js",
     "test": "node --check server.js"
   },
   "keywords": [],

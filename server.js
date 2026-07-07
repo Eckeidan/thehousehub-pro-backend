@@ -26,6 +26,8 @@ const tenantMaintenanceRoutes = require("./routes/tenantMaintenance");
 const tenantPaymentsRoutes = require("./routes/tenantPayments");
 const publicRoutes = require("./routes/public");
 const tenantChatbotRoutes = require("./routes/tenantChatbot");
+const superOwnerRoutes = require("./routes/superOwner");
+const { auditRequests } = require("./middleware/audit");
 
 
 const app = express();
@@ -59,6 +61,7 @@ app.options(/.*/, cors(corsOptions));
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use(auditRequests);
 
 const uploadsPath = path.join(__dirname, "uploads");
 
@@ -120,6 +123,7 @@ app.use("/api/tenant/settings", tenantSettingsRoutes);
 app.use("/api/tenant/maintenance", tenantMaintenanceRoutes);
 app.use("/api/tenant/payments", tenantPaymentsRoutes);
 app.use("/api/tenant-chatbot", tenantChatbotRoutes);
+app.use("/api/super-owner", superOwnerRoutes);
 
 console.log("Dashboard route mounted: /api/dashboard");
 console.log("Tenant contact route mounted: /api/tenant/contact");
