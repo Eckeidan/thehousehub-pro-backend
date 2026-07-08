@@ -1,6 +1,9 @@
 const express = require("express");
+const fs = require("fs");
+const path = require("path");
 const multer = require("multer");
 const { CloudinaryStorage } = require("multer-storage-cloudinary");
+const streamifier = require("streamifier");
 
 const prisma = require("../lib/prisma");
 const cloudinary = require("../utils/cloudinary");
@@ -10,14 +13,27 @@ const { createNotification } = require("../utils/createNotification");
 const router = express.Router();
 
 /* CLOUDINARY UPLOAD */
-const storage = new CloudinaryStorage({
-  cloudinary,
-  params: {
-    folder: "propertyos/maintenance",
-    resource_type: "image",
-    allowed_formats: ["jpg", "jpeg", "png", "webp"],
-  },
-});
+const uploadDir = path.join(__dirname, "..", "uploads", "maintenance");
+fs.mkdirSync(uploadDir, { recursive: true });
+
+function hasCloudinaryConfig() {
+  return Boolean(
+    process.env.CLOUDINARY_CLOUD_NAME &&
+      process.env.CLOUDINARY_API_KEY &&
+      process.env.CLOUDINARY_API_SECRET
+  );
+}
+
+const storage = hasCloudinaryConfig()
+  ? new CloudinaryStorage({
+      cloudinary,
+      params: {
+        folder: "propertyos/maintenance",
+        resource_type: "image",
+        allowed_formats: ["jpg", "jpeg", "png", "webp"],
+      },
+    })
+  : multer.memoryStorage();
 
 const upload = multer({
   storage,
@@ -35,6 +51,78 @@ const upload = multer({
     cb(null, true);
   },
 });
+
+function safeLocalFileName(originalName) {
+  const ext = path.extname(originalName || "");
+  const safeName = path
+    .basename(originalName || "maintenance-photo", ext)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+  return `${Date.now()}-${safeName || "maintenance-photo"}${ext}`;
+}
+
+function uploadBufferToCloudinary(fileBuffer) {
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      {
+        folder: "propertyos/maintenance",
+        resource_type: "image",
+      },
+      (error, result) => {
+        if (error) return reject(error);
+        resolve(result);
+      }
+    );
+
+    streamifier.createReadStream(fileBuffer).pipe(stream);
+  });
+}
+
+async function persistMaintenancePhotos(files = []) {
+  if (!Array.isArray(files) || files.length === 0) return [];
+
+  return Promise.all(
+    files.map(async (file) => {
+      if (file.path) {
+        return {
+          url: file.path,
+          fileName: file.originalname,
+          mimeType: file.mimetype,
+          size: file.size,
+          provider: "cloudinary",
+          publicId: file.filename,
+        };
+      }
+
+      if (hasCloudinaryConfig() && file.buffer) {
+        const uploaded = await uploadBufferToCloudinary(file.buffer);
+        return {
+          url: uploaded.secure_url,
+          fileName: file.originalname,
+          mimeType: file.mimetype,
+          size: file.size,
+          provider: "cloudinary",
+          publicId: uploaded.public_id,
+        };
+      }
+
+      const filename = safeLocalFileName(file.originalname);
+      const filePath = path.join(uploadDir, filename);
+      fs.writeFileSync(filePath, file.buffer);
+
+      return {
+        url: `/uploads/maintenance/${filename}`,
+        fileName: file.originalname,
+        mimeType: file.mimetype,
+        size: file.size,
+        provider: "local",
+        publicId: filename,
+      };
+    })
+  );
+}
 
 function uploadPhotos(req, res, next) {
   upload.array("photos", 5)(req, res, (error) => {
@@ -274,16 +362,7 @@ router.post(
       const safePriority =
         priority && isValidPriority(priority) ? priority : "MEDIUM";
 
-      const photos = Array.isArray(req.files)
-        ? req.files.map((file) => ({
-            url: file.path,
-            fileName: file.originalname,
-            mimeType: file.mimetype,
-            size: file.size,
-            provider: "cloudinary",
-            publicId: file.filename,
-          }))
-        : [];
+      const photos = await persistMaintenancePhotos(req.files);
 
       const requestNumber = await generateUniqueRequestNumber();
 
@@ -344,7 +423,6 @@ router.post(
 );
 
 /* GET /api/tenant/maintenance/:id */
-/* GET /api/tenant/maintenance/:id */
 router.get("/:id", requireAuth, requireRole("TENANT"), async (req, res) => {
   try {
     const organizationId = requireOrg(req, res);
@@ -395,6 +473,113 @@ router.get("/:id", requireAuth, requireRole("TENANT"), async (req, res) => {
     console.error("GET /api/tenant/maintenance/:id error:", error);
     return res.status(500).json({
       error: error.message || "Failed to load maintenance request",
+    });
+  }
+});
+
+/* PUT /api/tenant/maintenance/:id */
+router.put("/:id", requireAuth, requireRole("TENANT"), async (req, res) => {
+  try {
+    const organizationId = requireOrg(req, res);
+    if (!organizationId) return;
+
+    const tenant = await resolveTenant(req, organizationId);
+
+    if (!tenant) {
+      return res.status(403).json({
+        error: "Unauthorized tenant",
+      });
+    }
+
+    const existing = await prisma.maintenanceRequest.findFirst({
+      where: {
+        id: req.params.id,
+        organizationId,
+        tenantId: tenant.id,
+      },
+    });
+
+    if (!existing) {
+      return res.status(404).json({
+        error: "Maintenance request not found for this tenant",
+      });
+    }
+
+    if (existing.status !== "OPEN") {
+      return res.status(409).json({
+        error: "Only OPEN maintenance requests can be edited by the tenant.",
+      });
+    }
+
+    const {
+      title,
+      description,
+      category,
+      priority,
+      preferredDate,
+      entryPermission,
+      locationNote,
+    } = req.body || {};
+
+    if (!title || String(title).trim() === "") {
+      return res.status(400).json({ error: "Title is required" });
+    }
+
+    const safeCategory =
+      category && isValidCategory(category) ? category : existing.category;
+
+    const safePriority =
+      priority && isValidPriority(priority) ? priority : existing.priority;
+
+    const updated = await prisma.maintenanceRequest.update({
+      where: { id: existing.id },
+      data: {
+        title: String(title).trim(),
+        description: description ? String(description).trim() : null,
+        category: safeCategory,
+        priority: safePriority,
+        preferredDate: parseOptionalDate(preferredDate),
+        entryPermission:
+          entryPermission === "true" || entryPermission === true,
+        locationNote: locationNote ? String(locationNote).trim() : null,
+      },
+      include: {
+        property: true,
+        unit: true,
+        tenant: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+          },
+        },
+        contractor: true,
+        aiRecommendations: {
+          where: { type: "CONTRACTOR_SUGGESTION" },
+          orderBy: { createdAt: "desc" },
+          take: 1,
+        },
+      },
+    });
+
+    try {
+      await createNotification({
+        tenantId: tenant.id,
+        title: "Maintenance request updated",
+        message: `Your maintenance request "${updated.title}" was updated successfully.`,
+        type: "INFO",
+        category: "MAINTENANCE",
+      });
+    } catch (notificationError) {
+      console.error("Tenant maintenance update notification error:", notificationError);
+    }
+
+    return res.json(updated);
+  } catch (error) {
+    console.error("PUT /api/tenant/maintenance/:id error:", error);
+    return res.status(500).json({
+      error: error.message || "Failed to update maintenance request",
     });
   }
 });
