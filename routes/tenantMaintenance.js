@@ -269,6 +269,114 @@ function isValidPriority(value) {
   return ["LOW", "MEDIUM", "HIGH", "URGENT"].includes(value);
 }
 
+function detectMaintenanceClassification(title = "", description = "") {
+  const text = `${title} ${description}`.toLowerCase();
+  const hasAny = (keywords) => keywords.some((keyword) => text.includes(keyword));
+
+  let category = "GENERAL";
+
+  if (
+    hasAny([
+      "water",
+      "leak",
+      "leaking",
+      "pipe",
+      "plumbing",
+      "toilet",
+      "sink",
+      "drain",
+      "faucet",
+      "shower",
+      "bathroom",
+      "sewer",
+      "flood",
+    ])
+  ) {
+    category = "PLUMBING";
+  } else if (
+    hasAny([
+      "electric",
+      "electrical",
+      "power",
+      "outlet",
+      "socket",
+      "breaker",
+      "light",
+      "spark",
+      "wire",
+      "wiring",
+    ])
+  ) {
+    category = "ELECTRICAL";
+  } else if (
+    hasAny(["heat", "heating", "ac", "a/c", "air conditioning", "hvac", "furnace", "thermostat"])
+  ) {
+    category = "HVAC";
+  } else if (hasAny(["lock", "key", "door won't lock", "locked out", "deadbolt"])) {
+    category = "LOCKS";
+  } else if (hasAny(["paint", "wall", "ceiling", "drywall", "mold", "stain"])) {
+    category = "PAINTING";
+  } else if (hasAny(["pest", "bug", "insect", "roach", "cockroach", "mouse", "mice", "rat"])) {
+    category = "PEST_CONTROL";
+  } else if (
+    hasAny([
+      "fridge",
+      "refrigerator",
+      "oven",
+      "stove",
+      "dishwasher",
+      "washer",
+      "dryer",
+      "appliance",
+    ])
+  ) {
+    category = "APPLIANCE";
+  }
+
+  let priority = "MEDIUM";
+
+  if (
+    hasAny([
+      "fire",
+      "smoke",
+      "spark",
+      "gas",
+      "flood",
+      "flooding",
+      "sewage",
+      "no heat",
+      "no heating",
+      "no power",
+      "electrical shock",
+      "can't lock",
+      "cannot lock",
+      "door won't lock",
+      "emergency",
+    ])
+  ) {
+    priority = "URGENT";
+  } else if (
+    hasAny([
+      "water",
+      "leak",
+      "leaking",
+      "broken",
+      "not working",
+      "mold",
+      "no hot water",
+      "toilet clogged",
+      "clogged toilet",
+      "high",
+    ])
+  ) {
+    priority = "HIGH";
+  } else if (hasAny(["minor", "small", "low", "paint", "scratch"])) {
+    priority = "LOW";
+  }
+
+  return { category, priority };
+}
+
 /* GET /api/tenant/maintenance */
 router.get("/", requireAuth, requireRole("TENANT"), async (req, res) => {
   try {
@@ -356,11 +464,12 @@ router.post(
         return res.status(400).json({ error: "Title is required" });
       }
 
+      const detected = detectMaintenanceClassification(title, description);
       const safeCategory =
-        category && isValidCategory(category) ? category : "GENERAL";
+        category && isValidCategory(category) ? category : detected.category;
 
       const safePriority =
-        priority && isValidPriority(priority) ? priority : "MEDIUM";
+        priority && isValidPriority(priority) ? priority : detected.priority;
 
       const photos = await persistMaintenancePhotos(req.files);
 
