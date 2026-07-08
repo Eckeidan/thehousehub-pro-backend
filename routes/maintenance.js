@@ -221,6 +221,23 @@ function toDecimalString(value) {
   return num.toFixed(2);
 }
 
+const MAINTENANCE_TODO_STATUSES = ["OPEN"];
+const MAINTENANCE_PRIORITY_RANK = {
+  URGENT: 0,
+  HIGH: 1,
+  MEDIUM: 2,
+  LOW: 3,
+};
+
+function sortMaintenanceTodos(a, b) {
+  const rankA = MAINTENANCE_PRIORITY_RANK[a.priority] ?? 99;
+  const rankB = MAINTENANCE_PRIORITY_RANK[b.priority] ?? 99;
+
+  if (rankA !== rankB) return rankA - rankB;
+
+  return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+}
+
 function calculateEstimatedHours(priority) {
   switch (priority) {
     case "LOW":
@@ -542,6 +559,54 @@ router.get("/stats", async (req, res) => {
     return res.status(500).json({ error: "Failed to fetch maintenance stats" });
   }
 });
+
+/* =========================
+   GET /api/maintenance/todos
+   ========================= */
+router.get("/todos", async (req, res) => {
+  try {
+    const organizationId = requireOrg(req, res);
+    if (!organizationId) return;
+
+    const requests = await prisma.maintenanceRequest.findMany({
+      where: {
+        organizationId,
+        status: {
+          in: MAINTENANCE_TODO_STATUSES,
+        },
+      },
+      include: {
+        property: true,
+        unit: true,
+        tenant: true,
+        contractor: true,
+        aiRecommendations: {
+          where: { type: "CONTRACTOR_SUGGESTION" },
+          orderBy: { createdAt: "desc" },
+          take: 1,
+        },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    const sortedRequests = requests.sort(sortMaintenanceTodos);
+    const highPriorityCount = sortedRequests.filter((request) =>
+      ["URGENT", "HIGH"].includes(request.priority)
+    ).length;
+
+    return res.json({
+      count: sortedRequests.length,
+      highPriorityCount,
+      requests: sortedRequests,
+    });
+  } catch (error) {
+    console.error("Error fetching maintenance todos:", error);
+    return res.status(500).json({
+      error: error.message || "Failed to fetch maintenance todos",
+    });
+  }
+});
+
 /* GET /api/maintenance/:id/recommendation */
 router.get("/:id/recommendation", async (req, res) => {
   try {

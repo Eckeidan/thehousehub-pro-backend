@@ -9,6 +9,7 @@ const prisma = require("../lib/prisma");
 const cloudinary = require("../utils/cloudinary");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const { createNotification } = require("../utils/createNotification");
+const { sendMaintenanceCreatedToAdmin } = require("../utils/sendEmail");
 
 const router = express.Router();
 
@@ -219,6 +220,59 @@ async function resolveTenant(req, organizationId) {
   }
 
   return null;
+}
+
+async function notifyOrganizationAdminsAboutMaintenance(organizationId, request) {
+  const admins = await prisma.user.findMany({
+    where: {
+      organizationId,
+      isActive: true,
+      role: {
+        in: ["ADMIN", "OWNER"],
+      },
+    },
+    select: {
+      id: true,
+      email: true,
+    },
+  });
+
+  const uniqueAdminEmails = [
+    ...new Set(
+      admins
+        .map((admin) => String(admin.email || "").trim())
+        .filter(Boolean)
+    ),
+  ];
+
+  const notificationMessage = `New maintenance request "${request.title}" was submitted by ${
+    request.tenant
+      ? `${request.tenant.firstName || ""} ${request.tenant.lastName || ""}`.trim() ||
+        request.tenant.email ||
+        "a tenant"
+      : "a tenant"
+  }.`;
+
+  await Promise.allSettled(
+    admins.map((admin) =>
+      createNotification({
+        userId: admin.id,
+        title: "New maintenance request",
+        message: notificationMessage,
+        type: "ALERT",
+        category: "MAINTENANCE",
+      })
+    )
+  );
+
+  if (uniqueAdminEmails.length === 0) {
+    await sendMaintenanceCreatedToAdmin(request);
+    return;
+  }
+
+  await Promise.allSettled(
+    uniqueAdminEmails.map((email) => sendMaintenanceCreatedToAdmin(request, email))
+  );
 }
 
 function generateRequestNumber() {
@@ -516,6 +570,15 @@ router.post(
         });
       } catch (notificationError) {
         console.error("Tenant maintenance notification error:", notificationError);
+      }
+
+      try {
+        await notifyOrganizationAdminsAboutMaintenance(organizationId, createdRequest);
+      } catch (adminNotificationError) {
+        console.error(
+          "Tenant maintenance admin notification error:",
+          adminNotificationError
+        );
       }
 
       return res.status(201).json(createdRequest);

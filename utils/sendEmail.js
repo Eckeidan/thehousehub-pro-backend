@@ -476,8 +476,12 @@ Materials Notes: ${materialsNotes || "N/A"}
   return { subject, text, html };
 }
 
-async function sendMaintenanceCreatedToAdmin(request) {
-  const to = process.env.ADMIN_EMAIL || SMTP_USER;
+async function sendMaintenanceCreatedToAdmin(request, recipientEmail = null) {
+  const to =
+    recipientEmail ||
+    process.env.MAINTENANCE_ADMIN_EMAIL ||
+    process.env.ADMIN_EMAIL ||
+    SMTP_USER;
   if (!to) return;
 
   const tenantName = `${request?.tenant?.firstName || ""} ${

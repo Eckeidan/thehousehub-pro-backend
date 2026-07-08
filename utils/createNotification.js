@@ -1,6 +1,7 @@
 const prisma = require("../lib/prisma");
 
 async function createNotification({
+  userId = null,
   tenantId = null,
   title,
   message,
@@ -8,23 +9,33 @@ async function createNotification({
   category = "SYSTEM",
 }) {
   try {
-    if (!tenantId || !title || !message) return null;
+    if (!title || !message) return null;
 
-    const tenant = await prisma.tenant.findUnique({
-      where: { id: tenantId },
-      include: {
-        user: true,
-      },
-    });
+    let targetUserId = userId;
+    let targetTenantId = tenantId;
 
-    if (!tenant || !tenant.user) {
-      return null;
+    if (!targetUserId) {
+      if (!tenantId) return null;
+
+      const tenant = await prisma.tenant.findUnique({
+        where: { id: tenantId },
+        include: {
+          user: true,
+        },
+      });
+
+      if (!tenant || !tenant.user) {
+        return null;
+      }
+
+      targetUserId = tenant.user.id;
+      targetTenantId = tenant.id;
     }
 
     return await prisma.notification.create({
       data: {
-        userId: tenant.user.id,
-        tenantId: tenant.id,
+        userId: targetUserId,
+        tenantId: targetTenantId,
         title,
         message,
         type,
