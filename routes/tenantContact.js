@@ -29,6 +29,17 @@ function tenantFullName(tenant) {
   return `${tenant?.firstName || ""} ${tenant?.lastName || ""}`.trim();
 }
 
+function tenantMessageNotificationWhere(user, tenantId) {
+  return {
+    isRead: false,
+    title: "New message from management",
+    OR: [
+      { userId: user.userId },
+      ...(tenantId ? [{ tenantId }] : []),
+    ],
+  };
+}
+
 async function resolveTenant(req, organizationId) {
   const tenantId = req.user?.tenantId;
 
@@ -154,6 +165,78 @@ router.get("/thread", requireAuth, requireRole("TENANT"), async (req, res) => {
   } catch (error) {
     console.error("Tenant contact thread GET error:", error);
     return res.status(500).json({ error: "Failed to load conversation" });
+  }
+});
+
+router.get("/unread", requireAuth, requireRole("TENANT"), async (req, res) => {
+  try {
+    const organizationId = requireOrg(req, res);
+    if (!organizationId) return;
+
+    if (!req.user?.tenantId) {
+      return res.status(400).json({ error: "Tenant not linked to user" });
+    }
+
+    const tenant = await resolveTenant(req, organizationId);
+
+    if (!tenant) {
+      return res.status(404).json({ error: "Tenant profile not found" });
+    }
+
+    const where = tenantMessageNotificationWhere(req.user, tenant.id);
+
+    const [unreadCount, latestNotification] = await Promise.all([
+      prisma.notification.count({ where }),
+      prisma.notification.findFirst({
+        where,
+        orderBy: { createdAt: "desc" },
+        select: {
+          id: true,
+          title: true,
+          message: true,
+          createdAt: true,
+        },
+      }),
+    ]);
+
+    return res.json({
+      ok: true,
+      unreadCount,
+      latestMessage: latestNotification,
+    });
+  } catch (error) {
+    console.error("Tenant contact unread GET error:", error);
+    return res.status(500).json({ error: "Failed to load unread messages" });
+  }
+});
+
+router.patch("/read", requireAuth, requireRole("TENANT"), async (req, res) => {
+  try {
+    const organizationId = requireOrg(req, res);
+    if (!organizationId) return;
+
+    if (!req.user?.tenantId) {
+      return res.status(400).json({ error: "Tenant not linked to user" });
+    }
+
+    const tenant = await resolveTenant(req, organizationId);
+
+    if (!tenant) {
+      return res.status(404).json({ error: "Tenant profile not found" });
+    }
+
+    const result = await prisma.notification.updateMany({
+      where: tenantMessageNotificationWhere(req.user, tenant.id),
+      data: { isRead: true },
+    });
+
+    return res.json({
+      ok: true,
+      updatedCount: result.count,
+    });
+  } catch (error) {
+    console.error("Tenant contact read PATCH error:", error);
+    return res.status(500).json({ error: "Failed to mark messages as read" });
   }
 });
 
