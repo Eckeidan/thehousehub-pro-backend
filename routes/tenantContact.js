@@ -4,6 +4,11 @@ const router = express.Router();
 const prisma = require("../lib/prisma");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const { createNotification } = require("../utils/createNotification");
+const {
+  persistCommunicationAttachments,
+  uploadCommunicationAttachments,
+  withCommunicationAttachments,
+} = require("../utils/communicationAttachments");
 
 function getOrganizationId(req) {
   return req.user?.organizationId || null;
@@ -144,7 +149,7 @@ router.get("/thread", requireAuth, requireRole("TENANT"), async (req, res) => {
       },
       property: tenant.property,
       unit: tenant.unit,
-      messages,
+      messages: messages.map(withCommunicationAttachments),
     });
   } catch (error) {
     console.error("Tenant contact thread GET error:", error);
@@ -152,9 +157,14 @@ router.get("/thread", requireAuth, requireRole("TENANT"), async (req, res) => {
   }
 });
 
-router.post("/", requireAuth, requireRole("TENANT"), async (req, res) => {
-  try {
-    const { subject, message } = req.body;
+router.post(
+  "/",
+  requireAuth,
+  requireRole("TENANT"),
+  uploadCommunicationAttachments,
+  async (req, res) => {
+    try {
+    const message = String(req.body?.message || "").trim();
     const organizationId = requireOrg(req, res);
     if (!organizationId) return;
 
@@ -162,9 +172,11 @@ router.post("/", requireAuth, requireRole("TENANT"), async (req, res) => {
       return res.status(400).json({ error: "Tenant not linked to user" });
     }
 
-    if (!subject?.trim() || !message?.trim()) {
+    const attachments = await persistCommunicationAttachments(req.files);
+
+    if (!message && attachments.length === 0) {
       return res.status(400).json({
-        error: "Subject and message are required",
+        error: "Message or attachment is required",
       });
     }
 
@@ -186,8 +198,12 @@ router.post("/", requireAuth, requireRole("TENANT"), async (req, res) => {
         propertyId: tenant.propertyId,
         type: "NOTE",
         direction: "INBOUND",
-        subject: subject.trim(),
-        messageSummary: message.trim(),
+        subject: "Tenant conversation",
+        messageSummary:
+          message ||
+          (attachments.length === 1
+            ? "Sent an attachment"
+            : `Sent ${attachments.length} attachments`),
         relatedTo: "TENANT_CONTACT",
         senderName: fullName || tenant.email || "Tenant",
         receiverName: tenant.property?.ownerName || "Property Management",
@@ -197,6 +213,7 @@ router.post("/", requireAuth, requireRole("TENANT"), async (req, res) => {
           unitName: tenant.unit?.unitName,
           tenantEmail: tenant.email,
           organizationId,
+          attachments,
         },
       },
     });
@@ -206,12 +223,13 @@ router.post("/", requireAuth, requireRole("TENANT"), async (req, res) => {
     return res.status(201).json({
       ok: true,
       message: "Message sent successfully",
-      communication,
+      communication: withCommunicationAttachments(communication),
     });
   } catch (error) {
     console.error("Tenant contact POST error:", error);
     return res.status(500).json({ error: "Failed to send tenant message" });
   }
-});
+  }
+);
 
 module.exports = router;

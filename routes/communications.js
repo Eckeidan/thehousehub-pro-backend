@@ -3,6 +3,11 @@ const router = express.Router();
 const prisma = require("../lib/prisma");
 const { requireAuth, requireAdminOrOwner } = require("../middleware/auth");
 const { createNotification } = require("../utils/createNotification");
+const {
+  persistCommunicationAttachments,
+  uploadCommunicationAttachments,
+  withCommunicationAttachments,
+} = require("../utils/communicationAttachments");
 
 function getOrganizationId(req) {
   return req.user?.organizationId || null;
@@ -27,7 +32,7 @@ function mapCommunication(message) {
   const fullName = tenantFullName(message.tenant);
 
   return {
-    ...message,
+    ...withCommunicationAttachments(message),
     tenant: message.tenant
       ? {
           id: message.tenant.id,
@@ -112,6 +117,62 @@ router.get("/", requireAuth, requireAdminOrOwner, async (req, res) => {
   }
 });
 
+// GET /api/communications/tenants
+router.get("/tenants", requireAuth, requireAdminOrOwner, async (req, res) => {
+  try {
+    const organizationId = requireOrg(req, res);
+    if (!organizationId) return;
+
+    const tenants = await prisma.tenant.findMany({
+      where: {
+        organizationId,
+        isActive: true,
+      },
+      include: {
+        property: {
+          select: {
+            id: true,
+            name: true,
+            addressLine1: true,
+            city: true,
+            state: true,
+          },
+        },
+        unit: {
+          select: {
+            id: true,
+            unitCode: true,
+            unitName: true,
+          },
+        },
+        communications: {
+          orderBy: { sentAt: "desc" },
+          take: 1,
+        },
+      },
+      orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
+    });
+
+    return res.json({
+      tenants: tenants.map((tenant) => ({
+        id: tenant.id,
+        tenantId: tenant.id,
+        fullName: tenantFullName(tenant) || tenant.email || "Tenant",
+        email: tenant.email,
+        phone: tenant.phone,
+        property: tenant.property,
+        unit: tenant.unit,
+        lastMessage: tenant.communications?.[0]
+          ? withCommunicationAttachments(tenant.communications[0])
+          : null,
+      })),
+    });
+  } catch (error) {
+    console.error("GET /api/communications/tenants error:", error);
+    return res.status(500).json({ error: "Failed to load tenants" });
+  }
+});
+
 // GET /api/communications/thread/:tenantId
 router.get(
   "/thread/:tenantId",
@@ -147,7 +208,7 @@ router.get(
         },
         property: tenant.property,
         unit: tenant.unit,
-        messages,
+        messages: messages.map(withCommunicationAttachments),
       });
     } catch (error) {
       console.error("GET /api/communications/thread error:", error);
@@ -161,16 +222,17 @@ router.post(
   "/thread/:tenantId/reply",
   requireAuth,
   requireAdminOrOwner,
+  uploadCommunicationAttachments,
   async (req, res) => {
     try {
       const organizationId = requireOrg(req, res);
       if (!organizationId) return;
 
       const message = String(req.body?.message || "").trim();
-      const subject = String(req.body?.subject || "Management reply").trim();
+      const attachments = await persistCommunicationAttachments(req.files);
 
-      if (!message) {
-        return res.status(400).json({ error: "Message is required" });
+      if (!message && attachments.length === 0) {
+        return res.status(400).json({ error: "Message or attachment is required" });
       }
 
       const tenant = await getTenantForAdminThread(req.params.tenantId, organizationId);
@@ -191,8 +253,12 @@ router.post(
           propertyId: tenant.propertyId,
           type: "NOTE",
           direction: "OUTBOUND",
-          subject,
-          messageSummary: message,
+          subject: "Tenant conversation",
+          messageSummary:
+            message ||
+            (attachments.length === 1
+              ? "Sent an attachment"
+              : `Sent ${attachments.length} attachments`),
           relatedTo: "TENANT_CONTACT",
           senderName,
           receiverName,
@@ -200,6 +266,7 @@ router.post(
             adminUserId: req.user?.userId || req.user?.id || null,
             adminEmail: req.user?.email || null,
             organizationId,
+            attachments,
           },
         },
       });
@@ -209,7 +276,7 @@ router.post(
           userId: tenant.user.id,
           tenantId: tenant.id,
           title: "New message from management",
-          message,
+          message: communication.messageSummary,
           type: "INFO",
           category: "SYSTEM",
         });
@@ -217,7 +284,7 @@ router.post(
 
       return res.status(201).json({
         ok: true,
-        communication,
+        communication: withCommunicationAttachments(communication),
       });
     } catch (error) {
       console.error("POST /api/communications/thread/reply error:", error);
