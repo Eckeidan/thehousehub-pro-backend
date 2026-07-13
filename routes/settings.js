@@ -12,6 +12,157 @@ function getOrganizationId(req) {
   return req.user?.organizationId || null;
 }
 
+const ALLOWED_CURRENCIES = new Set(["USD", "EUR", "CDF"]);
+const ALLOWED_TIMEZONES = new Set([
+  "UTC",
+  "Africa/Kinshasa",
+  "America/New_York",
+]);
+
+function normalizeOptionalString(value) {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  return String(value).trim();
+}
+
+function isValidEmail(value) {
+  if (!value) return true;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value));
+}
+
+function isValidHttpUrl(value) {
+  if (!value) return true;
+
+  try {
+    const url = new URL(String(value));
+    return ["http:", "https:"].includes(url.protocol);
+  } catch {
+    return false;
+  }
+}
+
+function normalizeIntegerInRange(value, field, min, max, errors) {
+  if (value === undefined) return undefined;
+
+  const parsed = Number(value);
+
+  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+    errors.push(`${field} must be an integer between ${min} and ${max}`);
+    return undefined;
+  }
+
+  return parsed;
+}
+
+function normalizeMoney(value, field, errors) {
+  if (value === undefined) return undefined;
+
+  const parsed = Number(value);
+
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    errors.push(`${field} must be a valid positive amount`);
+    return undefined;
+  }
+
+  return parsed;
+}
+
+function normalizeSettingsPayload(body = {}) {
+  const errors = [];
+  const payload = {};
+
+  const stringFields = [
+    "companyName",
+    "email",
+    "logoUrl",
+    "primaryColor",
+    "supportEmail",
+    "bankName",
+    "bankAccountName",
+    "bankAccountNumber",
+    "paymentInstructions",
+  ];
+
+  stringFields.forEach((field) => {
+    const normalized = normalizeOptionalString(body[field]);
+    if (normalized !== undefined) payload[field] = normalized;
+  });
+
+  if (payload.email !== undefined && !isValidEmail(payload.email)) {
+    errors.push("Company email must be a valid email address");
+  }
+
+  if (payload.companyName !== undefined && !payload.companyName) {
+    errors.push("Company name is required");
+  }
+
+  if (payload.email !== undefined && !payload.email) {
+    errors.push("Company email is required");
+  }
+
+  if (
+    payload.supportEmail !== undefined &&
+    !isValidEmail(payload.supportEmail)
+  ) {
+    errors.push("Support email must be a valid email address");
+  }
+
+  if (payload.logoUrl !== undefined && !isValidHttpUrl(payload.logoUrl)) {
+    errors.push("Logo URL must be a valid http or https URL");
+  }
+
+  if (
+    payload.primaryColor !== undefined &&
+    !/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(payload.primaryColor)
+  ) {
+    errors.push("Primary brand color must be a valid hex color");
+  }
+
+  if (body.currency !== undefined) {
+    const currency = String(body.currency).trim().toUpperCase();
+    if (!ALLOWED_CURRENCIES.has(currency)) {
+      errors.push("Currency is not supported");
+    } else {
+      payload.currency = currency;
+    }
+  }
+
+  if (body.timezone !== undefined) {
+    const timezone = String(body.timezone).trim();
+    if (!ALLOWED_TIMEZONES.has(timezone)) {
+      errors.push("Timezone is not supported");
+    } else {
+      payload.timezone = timezone;
+    }
+  }
+
+  const rentDueDay = normalizeIntegerInRange(
+    body.rentDueDay,
+    "Rent due day",
+    1,
+    31,
+    errors
+  );
+  if (rentDueDay !== undefined) payload.rentDueDay = rentDueDay;
+
+  const lateFeeAmount = normalizeMoney(
+    body.lateFeeAmount,
+    "Late fee amount",
+    errors
+  );
+  if (lateFeeAmount !== undefined) payload.lateFeeAmount = lateFeeAmount;
+
+  ["tenantAccessDefault", "notifications", "maintenanceAlerts", "leaseReminders"].forEach(
+    (field) => {
+      if (body[field] !== undefined) {
+        payload[field] = Boolean(body[field]);
+      }
+    }
+  );
+
+  return { payload, errors };
+}
+
 /* GET settings — organization scoped */
 router.get(
   "/",
@@ -66,43 +217,45 @@ router.put("/", requireAuth, requireAdminOrOwner, async (req, res) => {
       });
     }
 
+    const { payload, errors } = normalizeSettingsPayload(req.body);
+
+    if (errors.length > 0) {
+      return res.status(400).json({
+        error: "Invalid settings payload",
+        details: errors,
+      });
+    }
+
     const updated = await prisma.appSetting.update({
       where: { id: settings.id },
       data: {
         organizationId,
 
-        companyName: req.body.companyName ?? settings.companyName,
-        email: req.body.email ?? settings.email,
-        currency: req.body.currency ?? settings.currency,
-        timezone: req.body.timezone ?? settings.timezone,
+        companyName: payload.companyName ?? settings.companyName,
+        email: payload.email ?? settings.email,
+        currency: payload.currency ?? settings.currency,
+        timezone: payload.timezone ?? settings.timezone,
 
-        logoUrl: req.body.logoUrl ?? settings.logoUrl,
-        primaryColor: req.body.primaryColor ?? settings.primaryColor,
-        supportEmail: req.body.supportEmail ?? settings.supportEmail,
+        logoUrl: payload.logoUrl ?? settings.logoUrl,
+        primaryColor: payload.primaryColor ?? settings.primaryColor,
+        supportEmail: payload.supportEmail ?? settings.supportEmail,
 
-        bankName: req.body.bankName ?? settings.bankName,
-        bankAccountName: req.body.bankAccountName ?? settings.bankAccountName,
+        bankName: payload.bankName ?? settings.bankName,
+        bankAccountName: payload.bankAccountName ?? settings.bankAccountName,
         bankAccountNumber:
-          req.body.bankAccountNumber ?? settings.bankAccountNumber,
+          payload.bankAccountNumber ?? settings.bankAccountNumber,
         paymentInstructions:
-          req.body.paymentInstructions ?? settings.paymentInstructions,
+          payload.paymentInstructions ?? settings.paymentInstructions,
 
-        rentDueDay:
-          req.body.rentDueDay !== undefined
-            ? Number(req.body.rentDueDay)
-            : settings.rentDueDay,
-
-        lateFeeAmount:
-          req.body.lateFeeAmount !== undefined
-            ? Number(req.body.lateFeeAmount)
-            : settings.lateFeeAmount,
+        rentDueDay: payload.rentDueDay ?? settings.rentDueDay,
+        lateFeeAmount: payload.lateFeeAmount ?? settings.lateFeeAmount,
 
         tenantAccessDefault:
-          req.body.tenantAccessDefault ?? settings.tenantAccessDefault,
-        notifications: req.body.notifications ?? settings.notifications,
+          payload.tenantAccessDefault ?? settings.tenantAccessDefault,
+        notifications: payload.notifications ?? settings.notifications,
         maintenanceAlerts:
-          req.body.maintenanceAlerts ?? settings.maintenanceAlerts,
-        leaseReminders: req.body.leaseReminders ?? settings.leaseReminders,
+          payload.maintenanceAlerts ?? settings.maintenanceAlerts,
+        leaseReminders: payload.leaseReminders ?? settings.leaseReminders,
       },
     });
 
